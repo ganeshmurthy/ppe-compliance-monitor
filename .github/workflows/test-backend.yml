@@ -1,0 +1,52 @@
+name: Backend Tests
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'app/backend/**'
+      - '.github/workflows/test-backend.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'app/backend/**'
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: docker.io/library/postgres:16-alpine
+        env:
+          POSTGRES_DB: ppe_tracking
+          POSTGRES_USER: ppe_user
+          POSTGRES_PASSWORD: ppe_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ppe_user -d ppe_tracking" --health-interval 5s --health-timeout 5s --health-retries 10 --health-start-period 5s
+    env:
+      DB_HOST: localhost
+      DB_PORT: "5432"
+      DB_NAME: ppe_tracking
+      DB_USER: ppe_user
+      DB_PASSWORD: ppe_password
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        working-directory: app/backend
+        run: pip install --no-cache-dir psycopg2-binary langchain langchain-openai pytest
+
+      - name: Run tests
+        working-directory: app/backend
+        run: pytest tests/ -v
+        env:
+          PYTHONPATH: ${{ github.workspace }}/app/backend:${{ github.workspace }}/app/backend/tests

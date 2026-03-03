@@ -41,6 +41,22 @@ def get_connection():
         conn.close()
 
 
+@contextmanager
+def get_readonly_connection():
+    """Context manager for read-only database connections.
+
+    Sets the session to readonly so PostgreSQL itself rejects any writes,
+    regardless of what SQL is passed in.
+    """
+    conn = psycopg2.connect(get_connection_string())
+    try:
+        conn.set_session(readonly=True, autocommit=False)
+        yield conn
+    finally:
+        conn.rollback()
+        conn.close()
+
+
 def init_database():
     """
     Initialize the database schema.
