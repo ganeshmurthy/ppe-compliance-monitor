@@ -176,4 +176,16 @@ kill-ports: ## Kill processes using required ports
 		fuser -k 9001/tcp 2>/dev/null || true; \
 	fi
 	@echo "   ✓ MinIO Console 9001 killed"
+	@if [ "$$(uname)" = "Darwin" ]; then \
+		lsof -ti :5432 | xargs kill -9 2>/dev/null || true; \
+	else \
+		fuser -k 5432/tcp 2>/dev/null || true; \
+	fi
+	@echo "   ✓ PostgreSQL 5432 killed"
+	@if [ "$$(uname)" = "Darwin" ]; then \
+		lsof -ti :8554 | xargs kill -9 2>/dev/null || true; \
+	else \
+		fuser -k 8554/tcp 2>/dev/null || true; \
+	fi
+	@echo "   ✓ MediaMTX 8554 killed"
 	@echo "All ports cleared."
