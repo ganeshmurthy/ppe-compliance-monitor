@@ -63,6 +63,11 @@ Model (`ppe.pt`) and video files are stored in MinIO rather than baked into cont
 
 ## Configuration
 
+Copy `.env.example` to `.env` and fill in your values. The `.env.example` file contains the required OpenAI-compatible LLM variables: `OPENAI_API_TOKEN`, `OPENAI_API_ENDPOINT`, `OPENAI_MODEL`, and `OPENAI_TEMPERATURE`.  
+**Important:** When specifying the `OPENAI_API_ENDPOINT`, make sure to add `/v1` at the end (e.g., `https://your-api-endpoint.example.com/v1`).  
+When you run `make local-up`, `make local-build-up`, or `make deploy`, you will be prompted for any missing required values.
+
+
 Copy `.env.example` to `.env` and fill in your values. The `.env.example` file contains the required OpenAI-compatible LLM variables (`OPENAI_API_TOKEN`, `OPENAI_API_ENDPOINT`, `OPENAI_MODEL`, `OPENAI_TEMPERATURE`). On `make local-up`, `make local-build-up`, or `make deploy`, you will be prompted for any missing required values.
 
 Backend environment variables:
