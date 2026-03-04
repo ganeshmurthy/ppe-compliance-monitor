@@ -1,4 +1,5 @@
 import cv2
+import threading
 import time
 from collections import defaultdict
 from datetime import datetime
@@ -60,6 +61,18 @@ class MultiModalAIDemo:
         )
         self._frames_since_last_seen_update = 0
 
+        # Frame reader thread: consumes stream as fast as possible to avoid MediaMTX
+        # "reader too slow, discarding frames" and subsequent RTP/H.264 corruption.
+        self._reader_thread = None
+        self._reader_stop = threading.Event()
+        self._latest_frame = None
+        self._latest_frame_lock = threading.Lock()
+        self._reconnect_needed = False
+
+        # Serialize capture_and_update: video_feed and latest_info both call it;
+        # DeepSORT tracker is not thread-safe. Concurrent access caused IndexError.
+        self._capture_lock = threading.Lock()
+
     def setup_components(self):
         """Load models and initialize runtime components."""
         self.cap = cv2.VideoCapture(self.video_source)
@@ -74,6 +87,7 @@ class MultiModalAIDemo:
                     break
         if self.is_live_stream:
             log.info("Video is live streaming")
+            self._start_frame_reader()
         else:
             log.info("Video is playing from MP4")
         self.runtime = Runtime()
@@ -252,17 +266,61 @@ class MultiModalAIDemo:
                         status[ppe_type] = ppe_value
         return status
 
+    def _frame_reader_loop(self):
+        """Continuously read frames to consume stream; keeps only latest. Prevents MediaMTX
+        from discarding frames ('reader too slow') which causes RTP corruption and bad H.264."""
+        fail_count = 0
+        while not self._reader_stop.is_set():
+            cap = self.cap
+            if cap is None or not cap.isOpened():
+                time.sleep(0.05)
+                continue
+            success, frame = cap.read()
+            if success and frame is not None:
+                fail_count = 0
+                with self._latest_frame_lock:
+                    self._latest_frame = frame.copy()
+            elif self._reader_stop.is_set():
+                break
+            else:
+                fail_count += 1
+                if fail_count >= 30:
+                    self._reconnect_needed = True
+                    log.debug("Frame reader: consecutive failures, reconnect needed")
+                time.sleep(0.01)
+
+    def _start_frame_reader(self):
+        """Start background thread that consumes stream as fast as possible."""
+        self._reader_stop.clear()
+        self._reader_thread = threading.Thread(
+            target=self._frame_reader_loop, daemon=True
+        )
+        self._reader_thread.start()
+
+    def _stop_frame_reader(self):
+        """Stop frame reader thread before reconnect/release."""
+        self._reader_stop.set()
+        if self._reader_thread is not None:
+            self._reader_thread.join(timeout=2.0)
+            self._reader_thread = None
+        with self._latest_frame_lock:
+            self._latest_frame = None
+
     def _reconnect_stream(self):
         """Reconnect to live stream with retry and backoff."""
+        self._stop_frame_reader()
         max_retries = 5
         base_delay = 2
         for attempt in range(max_retries):
             try:
                 if self.cap is not None:
                     self.cap.release()
+                    self.cap = None
+                    time.sleep(0.5)  # Allow FFmpeg/OpenCV to clean up before realloc
                 self.cap = cv2.VideoCapture(self.video_source)
                 if self.cap.isOpened():
                     log.info(f"Reconnected to stream (attempt {attempt + 1})")
+                    self._start_frame_reader()
                     return True
             except Exception as e:
                 log.warning(f"Reconnect attempt {attempt + 1} failed: {e}")
@@ -272,14 +330,44 @@ class MultiModalAIDemo:
         log.error("Failed to reconnect to stream after all retries")
         return False
 
-    def capture_and_update(self, resize_to=None):
-        """Capture a frame, optionally resize, update detection state, and return frame data."""
-        success, frame = self.cap.read()
-        if not success:
+    def capture_and_update(self, resize_to=None, caller=None):
+        """Capture a frame, optionally resize, update detection state, and return frame data.
+
+        caller: optional string for debug (e.g. 'video_feed', 'latest_info').
+        """
+        with self._capture_lock:
+            return self._capture_and_update_impl(resize_to=resize_to, caller=caller)
+
+    def _capture_and_update_impl(self, resize_to=None, caller=None):
+        """Internal implementation; must be called with _capture_lock held."""
+        log.debug(
+            "capture_and_update: caller=%s tid=%s",
+            caller or "unknown",
+            threading.current_thread().name,
+        )
+        if self.is_live_stream and self._reader_thread is not None:
+            if self._reconnect_needed:
+                self._reconnect_needed = False
+                log.debug("Stream read failed, attempting reconnect")
+                if self._reconnect_stream():
+                    return self._capture_and_update_impl(
+                        resize_to=resize_to, caller=caller
+                    )
+                return None, []
+            with self._latest_frame_lock:
+                frame = self._latest_frame
+            if frame is None:
+                return None, []
+            success = True
+        else:
+            success, frame = self.cap.read()
+        if not success or frame is None:
             if self.is_live_stream:
                 log.debug("Stream read failed, attempting reconnect")
                 if self._reconnect_stream():
-                    return self.capture_and_update(resize_to=resize_to)
+                    return self._capture_and_update_impl(
+                        resize_to=resize_to, caller=caller
+                    )
                 return None, []
             log.debug("End of video reached, looping back to start")
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -325,9 +413,24 @@ class MultiModalAIDemo:
         # Run DeepSORT to get track IDs for persons
         tracked_person_boxes = {}  # {track_id: (x1, y1, x2, y2)}
         if person_detections_for_tracker:
-            tracks = self.tracker.update_tracks(
-                person_detections_for_tracker, frame=frame
-            )
+            try:
+                tracks = self.tracker.update_tracks(
+                    person_detections_for_tracker, frame=frame
+                )
+            except IndexError as e:
+                n_det = len(person_detections_for_tracker)
+                inner = getattr(self.tracker, "tracker", self.tracker)
+                n_tracks = len(getattr(inner, "tracks", []))
+                log.error(
+                    "tracker IndexError: caller=%s tid=%s n_detections=%s n_tracks=%s err=%s",
+                    caller or "unknown",
+                    threading.current_thread().name,
+                    n_det,
+                    n_tracks,
+                    e,
+                    exc_info=True,
+                )
+                raise
             for track in tracks:
                 if not track.is_confirmed():
                     continue

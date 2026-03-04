@@ -55,7 +55,9 @@ def generate_frames():
     """Stream processed video frames with annotated detections."""
     global latest_description, latest_summary
     while True:
-        frame, detections = demo.capture_and_update(resize_to=(1920, 1080))
+        frame, detections = demo.capture_and_update(
+            resize_to=(1920, 1080), caller="video_feed"
+        )
         if frame is None:
             continue
 
@@ -118,6 +120,8 @@ def generate_frames():
         latest_summary = demo.latest_summary or latest_summary
 
         ret, buffer = cv2.imencode(".jpg", annotated_frame)
+        if not ret:
+            continue
         frame = buffer.tobytes()
         yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n")
 
@@ -140,7 +144,7 @@ def api_root():
 def latest_info():
     """Return the latest description and summary."""
     global latest_description, latest_summary
-    demo.capture_and_update()
+    demo.capture_and_update(caller="latest_info")
     if demo.description_buffer:
         latest_description = demo.description_buffer[-1]
     latest_summary = demo.latest_summary or latest_summary
