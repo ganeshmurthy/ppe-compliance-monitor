@@ -34,7 +34,7 @@ PLATFORM_LOCAL ?= $(shell uname -m | sed -e 's/x86_64/linux\/amd64/' -e 's/arm64
 
 IMAGE_NAME ?= ppe-compliance-monitor
 IMAGE_TAG ?= latest
-IMAGE_REGISTRY ?= quay.io/rh-ai-quickstart
+IMAGE_REGISTRY ?= quay.io/ganeshmurthy
 IMAGE_REPOSITORY := $(if $(IMAGE_REGISTRY),$(IMAGE_REGISTRY)/,)$(IMAGE_NAME)
 BACKEND_IMAGE := $(IMAGE_REPOSITORY)-backend:$(IMAGE_TAG)
 FRONTEND_IMAGE := $(IMAGE_REPOSITORY)-frontend:$(IMAGE_TAG)

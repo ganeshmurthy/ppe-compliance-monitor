@@ -2,6 +2,8 @@ from flask import Flask, Response, request, jsonify, Blueprint
 from flask_cors import CORS
 import cv2
 import numpy as np
+import threading
+import time
 from multimodel import MultiModalAIDemo
 from llm import LLMChat
 import os
@@ -49,11 +51,19 @@ llm_chat = LLMChat()
 
 latest_description = "Initializing..."
 latest_summary = "Processing video..."
+_latest_info_lock = threading.Lock()
 
 
 def generate_frames():
     """Stream processed video frames with annotated detections."""
     global latest_description, latest_summary
+    fps = getattr(demo, "stream_fps", None) or 30.0
+    min_interval = 1.0 / fps
+    last_send_time = 0.0
+    # DEBUG: track consumer (browser send) frame rate
+    _send_frame_count = 0
+    _send_start = time.monotonic()
+    _send_log_interval = 5.0
     while True:
         frame, detections = demo.capture_and_update(
             resize_to=(1920, 1080), caller="video_feed"
@@ -115,14 +125,35 @@ def generate_frames():
                     2,
                 )
 
-        if demo.description_buffer:
-            latest_description = demo.description_buffer[-1]
-        latest_summary = demo.latest_summary or latest_summary
+        with _latest_info_lock:
+            if demo.description_buffer:
+                latest_description = demo.description_buffer[-1]
+            latest_summary = demo.latest_summary or latest_summary
+
+        # Throttle: don't send more than fps frames/sec to browser
+        now = time.monotonic()
+        elapsed = now - last_send_time
+        if elapsed < min_interval:
+            time.sleep(min_interval - elapsed)
+        last_send_time = time.monotonic()
 
         ret, buffer = cv2.imencode(".jpg", annotated_frame)
         if not ret:
             continue
         frame = buffer.tobytes()
+        _send_frame_count += 1
+        # DEBUG: log consumer/send fps every N seconds
+        _elapsed = time.monotonic() - _send_start
+        if _elapsed >= _send_log_interval:
+            _fps = _send_frame_count / _elapsed if _elapsed > 0 else 0
+            log.info(
+                "[DEBUG generate_frames] consumer fps=%.1f (sent %d frames to browser in %.1fs)",
+                _fps,
+                _send_frame_count,
+                _elapsed,
+            )
+            _send_frame_count = 0
+            _send_start = time.monotonic()
         yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n")
 
 
@@ -145,10 +176,12 @@ def latest_info():
     """Return the latest description and summary."""
     global latest_description, latest_summary
     demo.capture_and_update(caller="latest_info")
-    if demo.description_buffer:
-        latest_description = demo.description_buffer[-1]
-    latest_summary = demo.latest_summary or latest_summary
-    return jsonify({"description": latest_description, "summary": latest_summary})
+    with _latest_info_lock:
+        if demo.description_buffer:
+            latest_description = demo.description_buffer[-1]
+        latest_summary = demo.latest_summary or latest_summary
+        desc, summ = latest_description, latest_summary
+    return jsonify({"description": desc, "summary": summ})
 
 
 @api.route("/chat", methods=["POST"])
@@ -166,7 +199,9 @@ def chat():
         return jsonify({"error": "Field 'question' is required."}), 400
 
     session_id = (data.get("session_id") or "default").strip()
-    context = latest_description + " " + latest_summary
+    with _latest_info_lock:
+        desc, summ = latest_description, latest_summary
+    context = desc + " " + summ
 
     answer = llm_chat.ask_question(
         question=question,

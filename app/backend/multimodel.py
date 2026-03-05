@@ -5,10 +5,12 @@ from collections import defaultdict
 from datetime import datetime
 
 from database import (
+    get_stream_fps,
     init_database,
-    insert_person,
-    update_person_last_seen,
     insert_observation,
+    insert_person,
+    set_stream_fps,
+    update_person_last_seen,
 )
 from logger import get_logger
 from runtime import Runtime
@@ -73,6 +75,12 @@ class MultiModalAIDemo:
         # DeepSORT tracker is not thread-safe. Concurrent access caused IndexError.
         self._capture_lock = threading.Lock()
 
+        # Measured or loaded FPS; used for browser throttling
+        self.stream_fps = None
+        # Timestamp-based FPS measurement in reader (live streams only)
+        self._reader_frame_timestamps = []
+        self._fps_measured = False
+
     def setup_components(self):
         """Load models and initialize runtime components."""
         self.cap = cv2.VideoCapture(self.video_source)
@@ -85,11 +93,28 @@ class MultiModalAIDemo:
                 if self.cap.isOpened():
                     log.info(f"Stream connected (attempt {attempt + 1})")
                     break
+        # Initialize database early so we can load/store stream FPS
+        init_database()
+        log.info("PostgreSQL database initialized: schema ready")
+
         if self.is_live_stream:
             log.info("Video is live streaming")
+            if not self.cap.isOpened():
+                log.info("Stream still not ready after DB init, retrying connection...")
+                for attempt in range(5):
+                    time.sleep(2)
+                    if self.cap is not None:
+                        self.cap.release()
+                        self.cap = None
+                    self.cap = cv2.VideoCapture(self.video_source)
+                    if self.cap.isOpened():
+                        log.info("Stream connected (post-init attempt %d)", attempt + 1)
+                        break
+            self._resolve_stream_fps()
             self._start_frame_reader()
         else:
             log.info("Video is playing from MP4")
+            self._resolve_stream_fps()
         self.runtime = Runtime()
         log.info(f"Model classes: {self.runtime.CLASSES}")
         self.class_names = list(self.runtime.CLASSES.values())
@@ -104,9 +129,27 @@ class MultiModalAIDemo:
         self.tracker = DeepSort(max_age=30, n_init=3)
         print("Object tracking enabled (DeepSORT)")
 
-        # Initialize PostgreSQL database for persistent storage
-        init_database()
-        print("PostgreSQL database initialized")
+    def _resolve_stream_fps(self):
+        """Get FPS: from DB if stored, else use default. Live streams measure in reader loop."""
+        fps = get_stream_fps(self.video_source)
+        if fps is not None and fps > 0:
+            log.info("Using stored stream FPS: %.2f", fps)
+            self.stream_fps = fps
+            return
+        # For files, try metadata first
+        if not self.is_live_stream and self.cap is not None and self.cap.isOpened():
+            meta_fps = self.cap.get(cv2.CAP_PROP_FPS)
+            if meta_fps and meta_fps > 0:
+                self.stream_fps = float(meta_fps)
+                set_stream_fps(self.video_source, self.stream_fps)
+                log.info("Using file metadata FPS: %.2f", self.stream_fps)
+                return
+        # Live streams: use fallback; FPS measured in reader loop (non-blocking)
+        self.stream_fps = 30.0
+        if self.is_live_stream:
+            log.info("No stored FPS; using 30.0 until measured in reader")
+        else:
+            log.warning("Could not get FPS; using fallback 30.0")
 
     def format_detection_description(
         self, detections_class_count: dict[str, int]
@@ -267,31 +310,100 @@ class MultiModalAIDemo:
         return status
 
     def _frame_reader_loop(self):
-        """Continuously read frames to consume stream; keeps only latest. Prevents MediaMTX
-        from discarding frames ('reader too slow') which causes RTP corruption and bad H.264."""
+        """Read from the stream whenever a frame is available; store only the latest frame.
+        Unprocessed frames are dropped (overwritten). Keeps RTSP buffer drained."""
         fail_count = 0
+        cap_unopened_count = 0
+        last_success_read_time = 0.0
+        # DEBUG: track producer (stream reader) frame rate
+        _reader_frame_count = 0
+        _reader_start = time.monotonic()
+        _reader_log_interval = 5.0
         while not self._reader_stop.is_set():
             cap = self.cap
             if cap is None or not cap.isOpened():
+                cap_unopened_count += 1
+                if cap_unopened_count >= 60:
+                    self._reconnect_needed = True
+                    log.info(
+                        "[DISTORTION-DIAG] cap not opened for 3s, triggering reconnect"
+                    )
+                    cap_unopened_count = 0
                 time.sleep(0.05)
                 continue
+            cap_unopened_count = 0
             success, frame = cap.read()
             if success and frame is not None:
+                # Log long gaps between reads (possible GIL starvation -> buffer overflow)
+                now = time.monotonic()
+                if last_success_read_time > 0:
+                    gap_ms = (now - last_success_read_time) * 1000
+                    if gap_ms > 100:
+                        log.info(
+                            "[DISTORTION-DIAG] long gap between reads: %.0fms (possible starvation)",
+                            gap_ms,
+                        )
+                last_success_read_time = now
                 fail_count = 0
                 with self._latest_frame_lock:
                     self._latest_frame = frame.copy()
+                _reader_frame_count += 1
+                # Timestamp-based FPS measurement (non-blocking, after first 20 frames)
+                if not self._fps_measured and self.is_live_stream:
+                    self._reader_frame_timestamps.append(time.perf_counter())
+                    if len(self._reader_frame_timestamps) >= 20:
+                        t0, t1 = (
+                            self._reader_frame_timestamps[0],
+                            self._reader_frame_timestamps[-1],
+                        )
+                        span = t1 - t0
+                        if span > 0:
+                            measured_fps = (len(self._reader_frame_timestamps) - 1) / span
+                            if 1.0 <= measured_fps <= 120.0:
+                                self.stream_fps = measured_fps
+                                set_stream_fps(self.video_source, measured_fps)
+                                log.info(
+                                    "Measured stream FPS in reader: %.2f (from %d frames)",
+                                    measured_fps,
+                                    len(self._reader_frame_timestamps),
+                                )
+                        self._fps_measured = True
+                        self._reader_frame_timestamps = []
+                # No pacing: read as fast as frames arrive to avoid RTSP buffer overflow
+                # and keyframe drops (which cause garbled H.264 decoding)
+                # DEBUG: log producer fps every N seconds
+                _elapsed = time.monotonic() - _reader_start
+                if _elapsed >= _reader_log_interval:
+                    _fps = _reader_frame_count / _elapsed if _elapsed > 0 else 0
+                    log.info(
+                        "[DEBUG frame_reader] producer fps=%.1f (read %d frames in %.1fs)",
+                        _fps,
+                        _reader_frame_count,
+                        _elapsed,
+                    )
+                    _reader_frame_count = 0
+                    _reader_start = time.monotonic()
             elif self._reader_stop.is_set():
                 break
             else:
                 fail_count += 1
+                if fail_count == 1 or fail_count % 10 == 0:
+                    log.info(
+                        "[DISTORTION-DIAG] cap.read() failed (fail_count=%d)",
+                        fail_count,
+                    )
                 if fail_count >= 30:
                     self._reconnect_needed = True
-                    log.debug("Frame reader: consecutive failures, reconnect needed")
+                    log.info(
+                        "[DISTORTION-DIAG] 30 consecutive read failures, triggering reconnect"
+                    )
                 time.sleep(0.01)
 
     def _start_frame_reader(self):
-        """Start background thread that consumes stream as fast as possible."""
+        """Start background thread that reads frames at stream FPS."""
         self._reader_stop.clear()
+        self._reader_frame_timestamps = []
+        self._fps_measured = False
         self._reader_thread = threading.Thread(
             target=self._frame_reader_loop, daemon=True
         )
@@ -308,6 +420,7 @@ class MultiModalAIDemo:
 
     def _reconnect_stream(self):
         """Reconnect to live stream with retry and backoff."""
+        log.info("[DISTORTION-DIAG] _reconnect_stream called (decoder reset)")
         self._stop_frame_reader()
         max_retries = 5
         base_delay = 2
@@ -348,7 +461,7 @@ class MultiModalAIDemo:
         if self.is_live_stream and self._reader_thread is not None:
             if self._reconnect_needed:
                 self._reconnect_needed = False
-                log.debug("Stream read failed, attempting reconnect")
+                log.info("[DISTORTION-DIAG] _reconnect_needed set, attempting reconnect")
                 if self._reconnect_stream():
                     return self._capture_and_update_impl(
                         resize_to=resize_to, caller=caller
@@ -358,6 +471,17 @@ class MultiModalAIDemo:
                 frame = self._latest_frame
             if frame is None:
                 return None, []
+            # Heuristic: corrupt H.264 frames often have anomalous stats (all same value, etc.)
+            try:
+                fmean, fstd = float(frame.mean()), float(frame.std())
+                if fstd < 3 or (fmean < 2 or fmean > 253):
+                    log.info(
+                        "[DISTORTION-DIAG] suspicious frame: mean=%.1f std=%.1f (possible corrupt)",
+                        fmean,
+                        fstd,
+                    )
+            except Exception:
+                pass
             success = True
         else:
             success, frame = self.cap.read()

@@ -110,6 +110,15 @@ def _init_schema():
             )
         """)
 
+        # Create stream_config table - stores measured FPS per stream URL
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS stream_config (
+                stream_url TEXT PRIMARY KEY,
+                fps REAL NOT NULL,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         # Create indexes for common queries
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_observations_track_id
@@ -129,7 +138,9 @@ def _init_schema():
         """)
 
         conn.commit()
-        log.debug("Schema created or verified (persons, person_observations, indexes)")
+        log.debug(
+            "Schema created or verified (persons, person_observations, stream_config, indexes)"
+        )
         log.info("PostgreSQL database initialized: %s:%s/%s", DB_HOST, DB_PORT, DB_NAME)
 
 
@@ -155,6 +166,33 @@ def update_person_last_seen(track_id: int, last_seen: datetime):
         cursor.execute(
             "UPDATE persons SET last_seen = %s WHERE track_id = %s",
             (last_seen, track_id),
+        )
+        conn.commit()
+
+
+def get_stream_fps(stream_url: str) -> float | None:
+    """Get stored FPS for a stream URL. Returns None if not found."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT fps FROM stream_config WHERE stream_url = %s",
+            (stream_url,),
+        )
+        row = cursor.fetchone()
+        return float(row[0]) if row else None
+
+
+def set_stream_fps(stream_url: str, fps: float):
+    """Store or update FPS for a stream URL."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """INSERT INTO stream_config (stream_url, fps, updated_at)
+               VALUES (%s, %s, CURRENT_TIMESTAMP)
+               ON CONFLICT (stream_url) DO UPDATE SET
+                   fps = EXCLUDED.fps,
+                   updated_at = CURRENT_TIMESTAMP""",
+            (stream_url, fps),
         )
         conn.commit()
 

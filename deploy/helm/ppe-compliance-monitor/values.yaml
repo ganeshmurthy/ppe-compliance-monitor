@@ -3,7 +3,7 @@ backend:
   port: 8888
   corsOrigins: ""
   image:
-    repository: quay.io/rh-ai-quickstart/ppe-compliance-monitor-backend
+    repository: quay.io/ganeshmurthy/ppe-compliance-monitor-backend
     tag: latest
     pullPolicy: Always
   serviceUrl: "http://ppe-predictor.svc.cluster.local:8888"
@@ -23,7 +23,7 @@ frontend:
   port: 3000
   apiUrl: ""
   image:
-    repository: quay.io/rh-ai-quickstart/ppe-compliance-monitor-frontend
+    repository: quay.io/ganeshmurthy/ppe-compliance-monitor-frontend
     tag: latest
     pullPolicy: Always
 
@@ -90,14 +90,14 @@ postgresql:
 
 data:
   image:
-    repository: quay.io/rh-ai-quickstart/ppe-compliance-monitor-data
+    repository: quay.io/ganeshmurthy/ppe-compliance-monitor-data
     tag: latest
     pullPolicy: Always
 
 runtimeDeployer:
   enabled: true
   image:
-    repository: quay.io/rh-ai-quickstart/ppe-compliance-monitor-runtime
+    repository: quay.io/ganeshmurthy/ppe-compliance-monitor-runtime
     tag: latest
     pullPolicy: Always
   scc:
