@@ -1,7 +1,8 @@
 from flask import Flask, Response, request, jsonify, Blueprint
 from flask_cors import CORS
 import cv2
-import numpy as np
+import time
+
 from multimodel import MultiModalAIDemo
 from llm import LLMChat
 import os
@@ -51,87 +52,186 @@ latest_description = "Initializing..."
 latest_summary = "Processing video..."
 
 
-def generate_frames():
-    """Stream processed video frames with annotated detections."""
+def generate_response_frames():
+    """Generate MJPEG video stream for the /api/video_feed endpoint.
+
+    This generator runs in a loop, fetching the latest frame and detections from
+    the demo (which are produced by a separate inference process). It draws
+    bounding boxes and labels on each frame, encodes as JPEG, and yields
+    multipart MJPEG chunks for the browser to display.
+
+    Flow:
+        - get_frame_for_display() returns the latest frame + detections (never blocks on inference)
+        - Draws boxes (cyan=person, green=compliant PPE, red=non-compliant)
+        - Encodes frame as JPEG and yields multipart chunk (--frame + Content-Type + Content-Length + bytes)
+
+    The display path is decoupled from inference: frames come from a reader thread,
+    detections from an inference process. If no frame is available, the loop
+    continues without yielding. Duplicate frames (same frame_id) are skipped.
+    """
     global latest_description, latest_summary
-    while True:
-        frame, detections = demo.capture_and_update(
-            resize_to=(1920, 1080), caller="video_feed"
-        )
-        if frame is None:
-            continue
+    log.info("Video feed: client connected")
+    none_count = 0
+    last_none_log = 0.0
+    frame_count = 0
+    last_frame_log = 0.0
+    last_sent_frame_id = None
+    try:
+        while True:
+            frame, detections, frame_id = demo.get_frame_for_display(
+                resize_to=(1920, 1080)
+            )
+            if frame is None:
+                none_count += 1
+                if none_count == 1:
+                    log.warning("Video feed: first None received (no frame to display)")
+                now = time.time()
+                if now - last_none_log >= 5.0:
+                    log.warning(
+                        "Video feed: received None %d times in last 5s (no frames to display)",
+                        none_count,
+                    )
+                    last_none_log = now
+                    none_count = 0
+                continue
 
-        annotated_frame = frame.copy()
-        for detection in detections:
-            x1, y1, x2, y2 = detection["bbox"]
-            conf = detection["confidence"]
-            currentClass = detection["class_name"]
+            # Skip sending duplicate frames (same frame_id as last sent)
+            if frame_id is not None and frame_id == last_sent_frame_id:
+                time.sleep(0.001)  # Avoid tight loop when waiting for new frame
+                continue
 
-            if conf > 0.5:
-                if currentClass == "Person":
-                    color = (0, 255, 255)  # Cyan for person
-                elif currentClass in ["NO-Hardhat", "NO-Safety Vest", "NO-Mask"]:
-                    color = (0, 0, 255)  # Red for non-compliance
-                elif currentClass in ["Hardhat", "Safety Vest", "Mask"]:
-                    color = (0, 255, 0)  # Green for compliance
-                else:
-                    color = (255, 255, 0)  # Yellow for other objects
+            try:
+                annotated_frame = frame.copy()
+            except Exception as e:
+                log.exception("Video feed: frame.copy() failed: %s", e)
+                continue
+            h_frame, w_frame = annotated_frame.shape[:2]
+            # Draw bounding boxes and labels for each detection (Person, PPE items)
+            # Use LINE_AA for antialiasing to reduce JPEG compression artifacts
+            line_type = cv2.LINE_AA
+            for detection in detections:
+                x1, y1, x2, y2 = detection["bbox"]
+                x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+                # Clip to frame bounds to avoid drawing artifacts
+                x1 = max(0, min(x1, w_frame - 1))
+                y1 = max(0, min(y1, h_frame - 1))
+                x2 = max(0, min(x2, w_frame - 1))
+                y2 = max(0, min(y2, h_frame - 1))
+                if x1 >= x2 or y1 >= y2:
+                    continue
+                conf = detection["confidence"]
+                currentClass = detection["class_name"]
 
-                # Draw futuristic box
-                cv2.line(annotated_frame, (x1, y1), (x1 + 20, y1), color, 2)
-                cv2.line(annotated_frame, (x1, y1), (x1, y1 + 20), color, 2)
-                cv2.line(annotated_frame, (x2, y1), (x2 - 20, y1), color, 2)
-                cv2.line(annotated_frame, (x2, y1), (x2, y1 + 20), color, 2)
-                cv2.line(annotated_frame, (x1, y2), (x1 + 20, y2), color, 2)
-                cv2.line(annotated_frame, (x1, y2), (x1, y2 - 20), color, 2)
-                cv2.line(annotated_frame, (x2, y2), (x2 - 20, y2), color, 2)
-                cv2.line(annotated_frame, (x2, y2), (x2, y2 - 20), color, 2)
+                if conf > 0.5:
+                    if currentClass == "Person":
+                        color = (0, 255, 255)  # Cyan for person
+                    elif currentClass in ["NO-Hardhat", "NO-Safety Vest", "NO-Mask"]:
+                        color = (0, 0, 255)  # Red for non-compliance
+                    elif currentClass in ["Hardhat", "Safety Vest", "Mask"]:
+                        color = (0, 255, 0)  # Green for compliance
+                    else:
+                        color = (255, 255, 0)  # Yellow for other objects
 
-                # Add glow effect
-                glow = np.zeros(annotated_frame.shape, dtype=np.uint8)
-                cv2.rectangle(glow, (x1, y1), (x2, y2), color, 5)
-                glow = cv2.GaussianBlur(glow, (21, 21), 0)
-                annotated_frame = cv2.addWeighted(annotated_frame, 1, glow, 0.5, 0)
+                    cv2.rectangle(
+                        annotated_frame,
+                        (x1, y1),
+                        (x2, y2),
+                        color,
+                        2,
+                        lineType=line_type,
+                    )
 
-                # Add text with futuristic style (include track_id for Person)
-                label = f"{currentClass} {conf:.2f}"
-                if currentClass == "Person" and detection.get("track_id") is not None:
-                    label = f"Person #{detection['track_id']} {conf:.2f}"
-                text_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.9, 2)[0]
-                cv2.rectangle(
-                    annotated_frame,
-                    (x1, y1 - text_size[1] - 10),
-                    (x1 + text_size[0], y1),
-                    color,
-                    -1,
+                    # Add text label; clip label position to avoid negative coords (causes distortion)
+                    label = f"{currentClass} {conf:.2f}"
+                    if (
+                        currentClass == "Person"
+                        and detection.get("track_id") is not None
+                    ):
+                        label = f"Person #{detection['track_id']} {conf:.2f}"
+                    text_size = cv2.getTextSize(
+                        label, cv2.FONT_HERSHEY_SIMPLEX, 0.9, 2
+                    )[0]
+                    label_y1 = max(0, y1 - text_size[1] - 10)
+                    label_y2 = y1
+                    label_x2 = min(w_frame, x1 + text_size[0])
+                    if label_x2 > x1 and label_y2 > label_y1:
+                        cv2.rectangle(
+                            annotated_frame,
+                            (x1, label_y1),
+                            (label_x2, label_y2),
+                            color,
+                            -1,
+                            lineType=line_type,
+                        )
+                    text_y = max(label_y1 + text_size[1] - 2, y1 - 5)
+                    cv2.putText(
+                        annotated_frame,
+                        label,
+                        (x1, text_y),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.9,
+                        (0, 0, 0),
+                        2,
+                        lineType=line_type,
+                    )
+
+            # Read from shared state (updated by inference thread)
+            with demo._display_lock:
+                if demo._display_description:
+                    latest_description = demo._display_description
+                latest_summary = (
+                    demo._display_summary or demo.latest_summary or latest_summary
                 )
-                cv2.putText(
-                    annotated_frame,
-                    label,
-                    (x1, y1 - 5),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.9,
-                    (0, 0, 0),
-                    2,
+
+            ret, buffer = cv2.imencode(
+                ".jpg", annotated_frame, [cv2.IMWRITE_JPEG_QUALITY, 95]
+            )
+            if not ret:
+                log.warning("Video feed: cv2.imencode failed")
+                continue
+            frame_bytes = buffer.tobytes()
+            frame_count += 1
+            last_sent_frame_id = frame_id
+            now = time.time()
+            if now - last_frame_log >= 10.0:
+                log.info("Video feed: sent %d frames (stream active)", frame_count)
+                last_frame_log = now
+            # Frame writer: log before/after yield to detect if browser stopped consuming
+            if frame_count % 10 == 0:
+                log.info("Frame writer: about to send frame %d to browser", frame_count)
+            try:
+                # Content-Length helps Chrome parse each part correctly (avoids distortion from boundary misparsing)
+                header = (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n"
+                    b"Content-Length: " + str(len(frame_bytes)).encode() + b"\r\n\r\n"
                 )
-
-        if demo.description_buffer:
-            latest_description = demo.description_buffer[-1]
-        latest_summary = demo.latest_summary or latest_summary
-
-        ret, buffer = cv2.imencode(".jpg", annotated_frame)
-        if not ret:
-            continue
-        frame = buffer.tobytes()
-        yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n")
+                yield header + frame_bytes + b"\r\n"
+                if frame_count % 10 == 0:
+                    log.info(
+                        "Frame writer: sent frame %d (browser consumed)", frame_count
+                    )
+            except (BrokenPipeError, ConnectionResetError, OSError) as e:
+                log.warning("Video feed: client connection lost during yield: %s", e)
+                break
+    except GeneratorExit:
+        log.info("Video feed: client disconnected (GeneratorExit)")
+    except Exception as e:
+        log.exception("Video feed: exception in stream loop: %s", e)
+    finally:
+        log.info("Video feed: stream ended (total frames sent: %d)", frame_count)
 
 
 @api.route("/video_feed")
 def video_feed():
     """Video streaming route."""
-    return Response(
-        generate_frames(), mimetype="multipart/x-mixed-replace; boundary=frame"
+    response = Response(
+        generate_response_frames(), mimetype="multipart/x-mixed-replace; boundary=frame"
     )
+    # Disable proxy buffering to reduce periodic pauses (OpenShift/HAProxy)
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["X-Accel-Buffering"] = "no"
+    return response
 
 
 @api.route("/")
@@ -142,12 +242,12 @@ def api_root():
 
 @api.route("/latest_info")
 def latest_info():
-    """Return the latest description and summary."""
+    """Return the latest description and summary. Reads from shared state (no inference trigger)."""
     global latest_description, latest_summary
-    demo.capture_and_update(caller="latest_info")
-    if demo.description_buffer:
-        latest_description = demo.description_buffer[-1]
-    latest_summary = demo.latest_summary or latest_summary
+    with demo._display_lock:
+        if demo._display_description:
+            latest_description = demo._display_description
+        latest_summary = demo._display_summary or demo.latest_summary or latest_summary
     return jsonify({"description": latest_description, "summary": latest_summary})
 
 
@@ -166,7 +266,11 @@ def chat():
         return jsonify({"error": "Field 'question' is required."}), 400
 
     session_id = (data.get("session_id") or "default").strip()
-    context = latest_description + " " + latest_summary
+    # Read from shared state for freshest context
+    with demo._display_lock:
+        desc = demo._display_description or latest_description
+        summ = demo._display_summary or demo.latest_summary or latest_summary
+    context = desc + " " + summ
 
     answer = llm_chat.ask_question(
         question=question,

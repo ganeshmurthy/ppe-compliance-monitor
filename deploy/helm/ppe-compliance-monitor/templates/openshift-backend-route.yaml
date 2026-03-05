@@ -3,6 +3,9 @@ apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
   name: {{ printf "%s-be" .Release.Name | trunc 30 | trimSuffix "-" }}
+  annotations:
+    # Long timeout for MJPEG streaming; default may cause periodic pauses
+    haproxy.router.openshift.io/timeout: 1h
   labels:
     {{- include "ppe-compliance-monitor.labels" . | nindent 4 }}
     app.kubernetes.io/component: backend

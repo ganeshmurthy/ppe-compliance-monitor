@@ -3,20 +3,11 @@ import cv2
 import os
 import time
 
-# import matplotlib.pyplot as plt
 from ovmsclient import make_grpc_client, make_http_client
-from pydantic import BaseModel
 from logger import get_logger
+from response import Detection, postprocess_image
 
 log = get_logger(__name__)
-
-
-class Detection(BaseModel):
-    class_id: int
-    class_name: str
-    confidence: float
-    bbox: list[float]
-    scale: float
 
 
 class Runtime:
@@ -64,87 +55,6 @@ class Runtime:
         )
         return blob, scale
 
-    def postprocess_image(
-        self, outputs: np.ndarray, input_image: np.ndarray, scale: float
-    ) -> list[Detection]:
-        """
-        Postprocess the tensor for the model.
-        """
-        # Transpose to (1, 8400, 14) for easier per-detection iteration
-        outputs = np.array([cv2.transpose(outputs[0])])
-        rows = outputs.shape[1]
-
-        boxes = []
-        scores = []
-        class_ids = []
-
-        for i in range(rows):
-            classes_scores = outputs[0][i][4:]
-            (minScore, maxScore, minClassLoc, (x, maxClassIndex)) = cv2.minMaxLoc(
-                classes_scores
-            )
-            if maxScore >= 0.25:
-                box = [
-                    outputs[0][i][0] - (0.5 * outputs[0][i][2]),
-                    outputs[0][i][1] - (0.5 * outputs[0][i][3]),
-                    outputs[0][i][2],
-                    outputs[0][i][3],
-                ]
-                boxes.append(box)
-                scores.append(maxScore)
-                class_ids.append(maxClassIndex)
-
-        # Apply Non-Maximum Suppression
-        result_boxes = cv2.dnn.NMSBoxes(boxes, scores, 0.20, 0.45, 0.5)
-
-        # colors = np.random.uniform(0, 255, size=(len(self.CLASSES), 3))
-
-        # def draw_bounding_box(img, class_id, confidence, x, y, x_plus_w, y_plus_h):
-        #     label = f"{self.CLASSES[class_id]} ({confidence:.2f})"
-        #     color = colors[class_id]
-        #     cv2.rectangle(img, (x, y), (x_plus_w, y_plus_h), color, 2)
-        #     cv2.putText(
-        #         img, label, (x - 10, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2
-        #     )
-
-        detections: list[Detection] = []
-        for i in range(len(result_boxes)):
-            index = result_boxes[i]
-            box = boxes[index]
-            detection = Detection(
-                class_id=class_ids[index],
-                class_name=self.CLASSES[class_ids[index]],
-                confidence=scores[index],
-                bbox=box,
-                scale=scale,
-            )
-            detections.append(detection)
-            # draw_bounding_box(
-            #     input_image,
-            #     class_ids[index],
-            #     scores[index],
-            #     round(box[0] * scale),
-            #     round(box[1] * scale),
-            #     round((box[0] + box[2]) * scale),
-            #     round((box[1] + box[3]) * scale),
-            # )
-
-        # # Save the output image
-        # cv2.imwrite("output.jpeg", input_image)
-
-        # # Display inline (convert BGR -> RGB for matplotlib)
-        # plt.figure(figsize=(14, 10))
-        # plt.imshow(cv2.cvtColor(input_image, cv2.COLOR_BGR2RGB))
-        # plt.axis("off")
-        # plt.title(f"YOLO PPE Detection via OVMS — {len(detections)} detections")
-        # plt.show()
-
-        # # Print detections summary
-        # for d in detections:
-        #     print(f"{d['class_name']}: {d['confidence']:.2f}")
-
-        return detections
-
     def inference(self, image: np.ndarray) -> np.ndarray:
         """
         Inference the image for the model.
@@ -180,7 +90,7 @@ class Runtime:
         t1 = time.perf_counter()
         outputs = self.inference(blob)
         t2 = time.perf_counter()
-        detections = self.postprocess_image(outputs, image, scale)
+        detections = postprocess_image(outputs, scale, self.CLASSES)
         t3 = time.perf_counter()
 
         log.debug(
