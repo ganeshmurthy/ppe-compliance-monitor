@@ -18,6 +18,21 @@ spec:
         {{- include "ppe-compliance-monitor.labels" . | nindent 8 }}
         app.kubernetes.io/component: backend
     spec:
+      {{- if not .Values.videoStream.streamUrl }}
+      initContainers:
+        - name: wait-for-video-stream
+          image: busybox:1.36
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Waiting for video-stream service..."
+              until nc -z {{ include "ppe-compliance-monitor.fullname" . }}-video-stream {{ .Values.videoStream.port }}; do
+                echo "Video stream not ready, retrying in 2s..."
+                sleep 2
+              done
+              echo "Video stream is ready"
+      {{- end }}
       containers:
         - name: backend
           image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
