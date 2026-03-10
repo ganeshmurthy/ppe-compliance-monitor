@@ -8,18 +8,20 @@ USER 1001
 
 WORKDIR /app/backend
 
-COPY backend/requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+COPY --from=ghcr.io/astral-sh/uv:0.9.7 /uv /uvx /bin/
+
+COPY backend/pyproject.toml backend/uv.lock ./
+
+# Install dependencies
+RUN uv sync --locked
+
 
 COPY backend/ ./
 
 WORKDIR /app
 
-# Model and video files are NOT included in this image.
-# For OpenShift/Kubernetes: Files are downloaded from MinIO to a PVC by init container.
-# For local development: Use podman-compose which mounts files via volumes or downloads from MinIO.
-
-ENV PYTHONPATH=/app
+# ENV PYTHONPATH=/app/backend
+ENV PATH="/app/backend/.venv/bin:$PATH"
 ENV TRANSFORMERS_CACHE=/tmp/.cache/huggingface
 ENV HF_HOME=/tmp/.cache/huggingface
 ENV XDG_CACHE_HOME=/tmp/.cache
@@ -31,4 +33,5 @@ RUN mkdir -p /tmp/.cache/huggingface /tmp/.cache/matplotlib /tmp/Ultralytics && 
 
 EXPOSE 8888
 
-CMD ["python", "/app/backend/app.py"]
+ENTRYPOINT ["python"]
+CMD ["/app/backend/app.py"]
