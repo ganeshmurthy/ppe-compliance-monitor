@@ -167,7 +167,7 @@ body {
     max-width: 65%;
     display: flex;
     flex-direction: column;
-    overflow: hidden;
+    overflow-y: auto;
   }
   
   .right-content {
