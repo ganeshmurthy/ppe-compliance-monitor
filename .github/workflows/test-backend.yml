@@ -43,7 +43,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: app/backend
-        run: pip install --no-cache-dir -r dev-requirements.txt
+        run: uv sync --group dev
 
       - name: Run tests
         working-directory: app/backend
