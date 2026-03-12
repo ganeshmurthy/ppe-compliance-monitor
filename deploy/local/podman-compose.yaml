@@ -169,6 +169,28 @@ services:
     networks:
       - ppe
 
+  backend-eval:
+    build:
+      context: ../../app/evals
+      dockerfile: Containerfile
+    image: ppe-compliance-monitor-evals:local
+    environment:
+      BACKEND_URL: "http://backend:8888"
+      OPENAI_API_TOKEN: "${OPENAI_API_TOKEN}"
+      OPENAI_API_ENDPOINT: "${OPENAI_API_ENDPOINT}"
+      OPENAI_MODEL: "${OPENAI_MODEL}"
+      OPENAI_TEMPERATURE: "${OPENAI_TEMPERATURE:-0.7}"
+      DEEPEVAL_TELEMETRY_OPT_OUT: "YES"
+      DB_HOST: postgresql
+      DB_PORT: "5432"
+      DB_NAME: ppe_tracking
+      DB_USER: ppe_user
+      DB_PASSWORD: ppe_password
+    networks:
+      - ppe
+    profiles:
+      - eval
+
   frontend:
     build:
       context: ../../app/frontend

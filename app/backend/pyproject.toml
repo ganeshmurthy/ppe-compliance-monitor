@@ -21,14 +21,3 @@ dependencies = [
     "torch>=2.10.0",
     "torchvision>=0.25.0",
 ]
-
-[dependency-groups]
-dev = [
-    "deepeval>=3.8.9",
-    "langchain>=1.2.10",
-    "langchain-mcp-adapters>=0.2.1",
-    "langchain-openai>=1.1.10",
-    "langgraph>=1.0.10",
-    "psycopg2-binary>=2.9.11",
-    "pytest>=9.0.2",
-]

@@ -268,10 +268,14 @@ def chat():
         return jsonify({"error": "Field 'question' is required."}), 400
 
     session_id = (data.get("session_id") or "default").strip()
-    # Read from shared state for freshest context
-    with demo._display_lock:
-        desc = demo._display_description or latest_description
-        # summ = demo._display_summary or demo.latest_summary or latest_summary
+    user_description = (data.get("description") or "").strip()
+
+    if user_description:
+        desc = user_description
+    else:
+        with demo._display_lock:
+            desc = demo._display_description or latest_description
+            # summ = demo._display_summary or demo.latest_summary or latest_summary
     context = desc.replace("Detected: ", "", 1)  # + " " + summ
 
     answer = llm_chat.chat(
