@@ -22,7 +22,7 @@ jobs:
       packages: write
     with:
       image_name: rh-ai-quickstart/ppe-compliance-monitor-backend
-      context: ./app
+      context: ./app/backend
       dockerfile: ./app/backend/Dockerfile
     secrets:
       QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}

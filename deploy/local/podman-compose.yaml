@@ -115,10 +115,10 @@ services:
 
   backend:
     build:
-      context: ../../app
-      dockerfile: backend/Dockerfile
+      context: ../../app/backend
+      dockerfile: Dockerfile
     image: ppe-compliance-monitor-backend:local
-    command: ["python", "/app/backend/app.py"]
+    command: ["app.py"]
     depends_on:
       data-loader:
         condition: service_completed_successfully

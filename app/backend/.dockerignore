@@ -1,10 +1,10 @@
 # Virtual environments
-backend/.venv
-backend/venv
-backend/env
-backend/ENV
-backend/.env
-backend/.envrc
+.venv
+venv
+env
+ENV
+.env
+.envrc
 
 # Python artifacts
 **/__pycache__/
@@ -32,5 +32,6 @@ backend/.envrc
 **/*.md
 
 # Development files
-backend/.dockerignore
-backend/.containerignore
+.deepeval
+.dockerignore
+.containerignore

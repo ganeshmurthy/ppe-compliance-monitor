@@ -37,7 +37,7 @@ spec:
         - name: backend
           image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
           imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
-          command: ["python", "/app/backend/app.py"]
+          command: ["python", "/backend/app.py"]
           ports:
             - containerPort: {{ .Values.backend.port }}
               name: http
