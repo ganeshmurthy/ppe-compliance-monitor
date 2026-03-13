@@ -126,6 +126,24 @@ Note: Requires model and video files in `app/models/` and `app/data/` directorie
 make dev-frontend
 ```
 
+## Training a Custom Model
+
+To train a YOLO model for badge detection (or other object classes) using your own images:
+
+1. **Install JupyterLab:**
+   ```bash
+   pip install jupyterlab
+   ```
+
+2. **Run the training notebook:**
+   ```bash
+   cd training/example
+   jupyter lab
+   ```
+   Then open `yolo_training.ipynb` and run the cells in order.
+
+The `training/` folder includes an example dataset and a [detailed README](training/README.md) with the full training process, notebook steps, and dataset requirements.
+
 ## OpenShift/Kubernetes Deployment
 
 ### Build and Push Images
