@@ -15,10 +15,10 @@ COPY pyproject.toml uv.lock ./
 
 # Install dependencies
 RUN uv sync --no-dev --locked
-ENV VIRTUAL_ENV=/app/.venv
-ENV PATH="/app/.venv/bin:$PATH"
 
-ENV HF_HOME=/hf_cache
+ENV VIRTUAL_ENV=/app/.venv \ 
+    PATH="/app/.venv/bin:$PATH" \
+    HF_HOME=/hf_cache
 
 RUN  mkdir -p /hf_cache && \
     chmod -R 777 /hf_cache && \

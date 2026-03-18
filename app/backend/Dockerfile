@@ -18,16 +18,19 @@ RUN uv sync --locked
 
 COPY ./ ./
 
-# ENV PYTHONPATH=/backend
-ENV PATH="/backend/.venv/bin:$PATH"
-ENV TRANSFORMERS_CACHE=/tmp/.cache/huggingface
-ENV HF_HOME=/tmp/.cache/huggingface
-ENV XDG_CACHE_HOME=/tmp/.cache
-ENV MPLCONFIGDIR=/tmp/.cache/matplotlib
-ENV YOLO_CONFIG_DIR=/tmp/Ultralytics
+ENV PATH="/backend/.venv/bin:$PATH" \
+    TRANSFORMERS_CACHE=/tmp/.cache/huggingface \
+    HF_HOME=/tmp/.cache/huggingface \
+    XDG_CACHE_HOME=/tmp/.cache \
+    MPLCONFIGDIR=/tmp/.cache/matplotlib \
+    YOLO_CONFIG_DIR=/tmp/Ultralytics
 
-RUN mkdir -p /tmp/.cache/huggingface /tmp/.cache/matplotlib /tmp/Ultralytics && \
-    chmod 777 /tmp/.cache/huggingface /tmp/.cache/matplotlib /tmp/Ultralytics
+RUN mkdir -p /tmp/.cache/huggingface \
+             /tmp/.cache/matplotlib \
+             /tmp/Ultralytics \
+    && chmod 777 /tmp/.cache/huggingface \
+             /tmp/.cache/matplotlib \
+             /tmp/Ultralytics
 
 EXPOSE 8888
 

@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help local-up local-build-up local-down build push deploy undeploy dev-backend dev-frontend local-build build-push-data kill-ports check-openai-env eval eval-k8s
+.PHONY: help local-up local-build-up local-down build push deploy deploy-gpu deploy-openvino undeploy dev-backend dev-frontend local-build build-push-data kill-ports check-openai-env eval eval-k8s
 help:
 	@echo "Available targets:"
 	@echo "  local-up   - Start local stack with Podman Compose"
@@ -8,7 +8,9 @@ help:
 	@echo "  build      - Build container image"
 	@echo "  push       - Push container image"
 	@echo "  build-push-data - Build and push data container image (video + models)"
-	@echo "  deploy     - Deploy manifests to OpenShift (in-cluster MP4 stream by default)"
+	@echo "  deploy     - Deploy to OpenShift with GPU runtime (default)"
+	@echo "  deploy-gpu - Deploy with GPU runtime (kserve/Triton) - same as deploy"
+	@echo "  deploy-openvino - Deploy with CPU runtime (OpenVINO Model Server)"
 	@echo "             Use VIDEO_STREAM_URL=rtsp://... for real camera"
 	@echo "  undeploy   - Remove manifests from OpenShift"
 	@echo "  dev-backend - Create venv, install deps, run backend"
@@ -49,6 +51,8 @@ BACKEND_DIR ?= app/backend
 FRONTEND_DIR ?= app/frontend
 HELM_RELEASE ?= ppe-compliance-monitor
 HELM_CHART ?= deploy/helm/ppe-compliance-monitor
+# Model serving runtime: "kserve" (GPU/Triton) or "openvino" (CPU/OVMS)
+RUNTIME_TYPE ?= kserve
 
 check-openai-env:
 	@token="$(OPENAI_API_TOKEN)"; \
@@ -116,12 +120,19 @@ deploy: check-openai-env
 		--set frontend.image.tag=$(IMAGE_TAG) \
 		--set data.image.repository=$(IMAGE_REPOSITORY)-data \
 		--set data.image.tag=$(IMAGE_TAG) \
+		--set modelServing.runtimeType=$(RUNTIME_TYPE) \
 		$${host:+--set openshift.sharedHost=$$host}"; \
 	if [ -n "$(VIDEO_STREAM_URL)" ] && [ "$(VIDEO_STREAM_URL)" != "rtsp://video-stream:8554/live" ]; then \
 		helm_args="$$helm_args --set videoStream.streamUrl=$(VIDEO_STREAM_URL)"; \
 	fi; \
 	helm upgrade --install $(HELM_RELEASE) $(HELM_CHART) \
 		--namespace $(NAMESPACE) --create-namespace $$helm_args
+
+deploy-gpu: ## Deploy with GPU runtime (kserve/Triton) - same as default deploy
+	$(MAKE) deploy RUNTIME_TYPE=kserve
+
+deploy-openvino: ## Deploy with CPU runtime (OpenVINO Model Server)
+	$(MAKE) deploy RUNTIME_TYPE=openvino
 
 undeploy:
 	@if [ -n "$(NAMESPACE)" ]; then oc project "$(NAMESPACE)"; fi

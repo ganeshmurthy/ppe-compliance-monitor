@@ -54,8 +54,8 @@ COPY data-image/upload.sh /upload/upload.sh
 RUN chmod +x /upload/upload.sh
 
 # Default environment variables (can be overridden)
-ENV MINIO_ENDPOINT=http://minio:9000
-ENV MINIO_ACCESS_KEY=minioadmin
-ENV MINIO_SECRET_KEY=minioadmin
+ENV MINIO_ENDPOINT=http://minio:9000 \
+    MINIO_ACCESS_KEY=minioadmin \
+    MINIO_SECRET_KEY=minioadmin
 
 ENTRYPOINT ["/bin/sh", "/upload/upload.sh"]
