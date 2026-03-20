@@ -18,6 +18,10 @@ spec:
         {{- include "ppe-compliance-monitor.labels" . | nindent 8 }}
         app.kubernetes.io/component: backend
     spec:
+      {{- if and .Values.backend.configStorage .Values.backend.configStorage.enabled }}
+      securityContext:
+        fsGroup: 1001
+      {{- end }}
       {{- if not .Values.videoStream.streamUrl }}
       initContainers:
         - name: wait-for-video-stream
@@ -70,21 +74,6 @@ spec:
               value: "false"
             - name: MODEL_PATH
               value: "/data/models/{{ .Values.storage.model.key }}"
-            {{- if .Values.videoStream.streamUrl }}
-            - name: VIDEO_STREAM_URL
-              value: {{ .Values.videoStream.streamUrl | quote }}
-            {{- else }}
-            - name: VIDEO_STREAM_URL
-              value: "rtsp://{{ include "ppe-compliance-monitor.fullname" . }}-video-stream.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.videoStream.port }}/{{ .Values.videoStream.path }}"
-            {{- end }}
-            - name: RUNTIME_TYPE
-              value: {{ .Values.modelServing.runtimeType | quote }}
-            - name: SERVICE_URL
-              {{- if eq .Values.modelServing.runtimeType "kserve" }}
-              value: "http://ppe-predictor.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.modelServing.kserve.restPort }}"
-              {{- else }}
-              value: "ppe-predictor.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.modelServing.openvino.grpcPort }}"
-              {{- end }}
             - name: MODEL_INPUT_NAME
               {{- if eq .Values.modelServing.runtimeType "kserve" }}
               value: {{ .Values.modelServing.kserve.modelInputName | quote }}
@@ -118,8 +107,25 @@ spec:
               value: {{ .Values.postgresql.password | quote }}
             - name: LOG_LEVEL
               value: {{ .Values.backend.logLevel | quote }}
+            {{- if and .Values.backend.configStorage .Values.backend.configStorage.enabled }}
+            - name: CONFIG_UPLOAD_DIR
+              value: /data/config/uploads
+            - name: CONFIG_THUMBNAIL_DIR
+              value: /data/config/thumbnails
+            {{- end }}
             {{- if .Values.postgresMcp.enabled }}
             - name: POSTGRES_MCP_URL
               value: "http://{{ include "ppe-compliance-monitor.fullname" . }}-postgres-mcp:{{ .Values.postgresMcp.port }}/sse"
             {{- end }}
             {{- end }}
+          {{- if and .Values.backend.configStorage .Values.backend.configStorage.enabled }}
+          volumeMounts:
+            - name: config-data
+              mountPath: /data/config
+          {{- end }}
+      {{- if and .Values.backend.configStorage .Values.backend.configStorage.enabled }}
+      volumes:
+        - name: config-data
+          persistentVolumeClaim:
+            claimName: {{ include "ppe-compliance-monitor.fullname" . }}-backend-config
+      {{- end }}

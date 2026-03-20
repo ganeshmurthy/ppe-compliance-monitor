@@ -20,5 +20,5 @@ def clean_db():
     """Truncate all data before every test (respecting FK order)."""
     with get_connection() as conn:
         cur = conn.cursor()
-        cur.execute("TRUNCATE person_observations, persons CASCADE")
+        cur.execute("TRUNCATE detection_observations, detection_tracks CASCADE")
         conn.commit()

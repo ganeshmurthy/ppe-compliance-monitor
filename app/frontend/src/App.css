@@ -161,6 +161,44 @@ body {
     overflow: hidden;
     padding-top: 70px; /* Add this line to make room for logos */
   }
+
+  .content-wrapper.three-column {
+    display: flex;
+    flex-direction: row;
+    gap: 16px;
+  }
+
+  .source-column {
+    flex: 0 0 40%;
+    min-width: 400px;
+    max-width: 480px;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+  }
+
+  .main-column {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+  }
+
+  .chat-column {
+    flex: 0 0 30%;
+    min-width: 220px;
+    max-width: 360px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    min-height: 0;
+  }
+
+  .chat-column .chatbot {
+    flex: 1;
+    min-height: 0;
+  }
   
   .left-content {
     flex: 2;
@@ -179,13 +217,26 @@ body {
   }
   
   @media (max-width: 1200px) {
+    .content-wrapper.three-column {
+      flex-direction: column;
+    }
+
+    .source-column,
+    .main-column,
+    .chat-column {
+      max-width: 100%;
+      min-width: 100%;
+    }
+  }
+
+  @media (max-width: 1200px) {
     .content-wrapper {
       flex-direction: column;
     }
 
-    .left-content,
-    .right-content {
-      max-width: 100%;
-      width: 100%;
-    }
+  .left-content,
+  .right-content {
+    max-width: 100%;
+    width: 100%;
   }
+}
