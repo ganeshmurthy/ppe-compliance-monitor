@@ -58,26 +58,29 @@ class Runtime:
             9: "vehicle",
         }
 
+        self._pad_shape: tuple[int, int] = (0, 0)
+        self._padded: np.ndarray | None = None
+        self._scale: float = 1.0
+
     def preprocess_image(self, image: np.ndarray):
         """
         Preprocess the image for the model.
         """
-        # Read the input image
-        # image = cv2.imread("team.jpg")
-        [height, width, _] = image.shape
+        height, width = image.shape[:2]
 
-        # Prepare a square image for inference (letterbox padding)
-        length = max(height, width)
-        padded = np.zeros((length, length, 3), np.uint8)
-        padded[0:height, 0:width] = image
-        image = padded
-        scale = length / 640
+        if (height, width) != self._pad_shape:
+            self._scale = max(height, width) / 640
+            new_w = int(width / self._scale)
+            new_h = int(height / self._scale)
+            self._resized_shape = (new_w, new_h)
+            self._padded = np.zeros((640, 640, 3), np.uint8)
+            self._pad_shape = (height, width)
 
-        # Preprocess: normalize, resize to 640x640, swap BGR->RGB, produce NCHW blob
-        blob = cv2.dnn.blobFromImage(
-            image, scalefactor=1 / 255, size=(640, 640), swapRB=True
-        )
-        return blob, scale
+        resized = cv2.resize(image, self._resized_shape, interpolation=cv2.INTER_LINEAR)
+        self._padded[: self._resized_shape[1], : self._resized_shape[0]] = resized
+
+        blob = cv2.dnn.blobFromImage(self._padded, scalefactor=1 / 255, swapRB=True)
+        return blob, self._scale
 
     def inference(self, image: np.ndarray) -> np.ndarray:
         """
