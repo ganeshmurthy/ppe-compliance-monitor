@@ -470,9 +470,13 @@ def _generate_thumbnail_s3(video_path):
             ret, frame = cap.read()
             cap.release()
             if ret and frame is not None:
-                ret_jpg, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                ret_jpg, buf = cv2.imencode(
+                    ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85]
+                )
                 if ret_jpg:
-                    upload_bytes(bucket, thumb_key, buf.tobytes(), content_type="image/jpeg")
+                    upload_bytes(
+                        bucket, thumb_key, buf.tobytes(), content_type="image/jpeg"
+                    )
                     log.info("Generated thumbnail: %s/%s", bucket, thumb_key)
                     return thumb_key
         finally:

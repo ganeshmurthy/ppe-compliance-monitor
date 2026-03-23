@@ -354,15 +354,9 @@ def clear_all_data() -> None:
         cursor.execute("DELETE FROM detection_classes")
         cursor.execute("DELETE FROM app_config")
         # Reset sequences so new inserts get id=1, etc.
-        cursor.execute(
-            "ALTER SEQUENCE app_config_id_seq RESTART WITH 1"
-        )
-        cursor.execute(
-            "ALTER SEQUENCE detection_classes_id_seq RESTART WITH 1"
-        )
-        cursor.execute(
-            "ALTER SEQUENCE detection_observations_id_seq RESTART WITH 1"
-        )
+        cursor.execute("ALTER SEQUENCE app_config_id_seq RESTART WITH 1")
+        cursor.execute("ALTER SEQUENCE detection_classes_id_seq RESTART WITH 1")
+        cursor.execute("ALTER SEQUENCE detection_observations_id_seq RESTART WITH 1")
         conn.commit()
         log.info("All tables cleared")
 

@@ -43,7 +43,7 @@ minio:
     buckets:
       - models
       - data
-      - config  # User uploads and thumbnails (enables horizontal scaling)
+      - config # User uploads and thumbnails (enables horizontal scaling)
 
   # Upload sample files to the minio bucket
   sampleFileUpload:

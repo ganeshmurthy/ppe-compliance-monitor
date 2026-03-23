@@ -11,7 +11,7 @@ import queue
 from multiprocessing import Process, Queue, Event
 from multiprocessing.shared_memory import SharedMemory
 
-from minio_client import get_config_bucket, download_file
+from minio_client import download_file
 from database import (
     init_database,
     insert_detection_track,
