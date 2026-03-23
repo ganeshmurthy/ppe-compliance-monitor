@@ -52,43 +52,33 @@ def postprocess_image(
     Returns:
         List of Detection objects.
     """
-    outputs = np.array([cv2.transpose(outputs[0])])
-    rows = outputs.shape[1]
+    data = outputs[0].T
 
-    boxes = []
-    scores = []
-    class_ids = []
+    class_scores = data[:, 4:]
+    max_scores = class_scores.max(axis=1)
+    max_class_ids = class_scores.argmax(axis=1)
 
-    for i in range(rows):
-        classes_scores = outputs[0][i][4:]
-        (minScore, maxScore, minClassLoc, (x, maxClassIndex)) = cv2.minMaxLoc(
-            classes_scores
-        )
-        if maxScore >= 0.25:
-            box = [
-                outputs[0][i][0] - (0.5 * outputs[0][i][2]),
-                outputs[0][i][1] - (0.5 * outputs[0][i][3]),
-                outputs[0][i][2],
-                outputs[0][i][3],
-            ]
-            boxes.append(box)
-            scores.append(maxScore)
-            class_ids.append(maxClassIndex)
+    mask = max_scores >= 0.25
+    data = data[mask]
+    scores = max_scores[mask]
+    class_ids = max_class_ids[mask]
 
-    result_boxes = cv2.dnn.NMSBoxes(boxes, scores, 0.20, 0.45, 0.5)
+    cx, cy, w, h = data[:, 0], data[:, 1], data[:, 2], data[:, 3]
+    boxes = np.column_stack([cx - 0.5 * w, cy - 0.5 * h, w, h])
+
+    result_boxes = cv2.dnn.NMSBoxes(boxes.tolist(), scores.tolist(), 0.20, 0.45, 0.5)
 
     detections: list[Detection] = []
-    for i in range(len(result_boxes)):
-        index = result_boxes[i]
-        box = boxes[index]
-        detection = Detection(
-            class_id=class_ids[index],
-            class_name=classes[class_ids[index]],
-            confidence=scores[index],
-            bbox=box,
-            scale=scale,
+    for idx in result_boxes:
+        detections.append(
+            Detection(
+                class_id=int(class_ids[idx]),
+                class_name=classes[int(class_ids[idx])],
+                confidence=float(scores[idx]),
+                bbox=boxes[idx].tolist(),
+                scale=scale,
+            )
         )
-        detections.append(detection)
 
     return detections
 
