@@ -2,10 +2,9 @@ backend:
   replicas: 1
   port: 8888
   corsOrigins: ""
-  # Persistent storage for uploaded videos and thumbnails
+  # Config storage: MinIO (config bucket) when enabled - enables horizontal scaling
   configStorage:
     enabled: true
-    size: 1Gi
   image:
     repository: quay.io/rh-ai-quickstart/ppe-compliance-monitor-backend
     tag: latest
@@ -44,6 +43,7 @@ minio:
     buckets:
       - models
       - data
+      - config  # User uploads and thumbnails (enables horizontal scaling)
 
   # Upload sample files to the minio bucket
   sampleFileUpload:

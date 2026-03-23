@@ -1,11 +1,19 @@
-from flask import Flask, Response, request, jsonify, Blueprint, send_from_directory
+from flask import Flask, Response, request, jsonify, Blueprint
 from flask_cors import CORS
 import cv2
 import json
 import os
+import tempfile
 import time
 from datetime import datetime
 
+from minio_client import (
+    get_config_bucket,
+    download_file,
+    upload_bytes,
+    get_object_stream,
+    object_exists,
+)
 from multimodel import MultiModalAIDemo
 from llm import LLMChat
 from database import (
@@ -338,7 +346,7 @@ def config_create():
     try:
         config_id = insert_config(model_url, video_source)
         replace_detection_classes(config_id, entries)
-        if _is_local_video_path(video_source):
+        if _is_s3_video_path(video_source):
             _generate_thumbnail(video_source)
         return jsonify({"id": config_id, "message": "Config created"}), 201
     except Exception as e:
@@ -368,7 +376,7 @@ def config_update(config_id):
         updated = update_config(config_id, model_url, video_source)
         if not updated:
             return jsonify({"error": "Config not found"}), 404
-        if _is_local_video_path(video_source):
+        if _is_s3_video_path(video_source):
             _generate_thumbnail(video_source)
         return jsonify({"message": "Config updated"})
     except Exception as e:
@@ -401,103 +409,108 @@ def active_config_set():
         return jsonify({"error": str(e)}), 500
 
 
-# Config upload - use /tmp in container (writable); CONFIG_UPLOAD_DIR overrides
-def _get_upload_dir():
-    env_dir = os.environ.get("CONFIG_UPLOAD_DIR")
-    if env_dir:
-        try:
-            os.makedirs(env_dir, exist_ok=True)
-            return env_dir
-        except (PermissionError, OSError) as e:
-            log.warning("CONFIG_UPLOAD_DIR %s not writable: %s", env_dir, e)
-    # /tmp is writable in containers; use it to avoid PermissionError on /data
-    upload_dir = "/tmp/ppe-config-uploads"
-    try:
-        os.makedirs(upload_dir, exist_ok=True)
-        return upload_dir
-    except (PermissionError, OSError):
-        return "/tmp"  # last resort
+# Config storage: MinIO only (enables horizontal scaling)
+log.info("Config storage: MinIO bucket=%s", get_config_bucket())
 
-
-UPLOAD_DIR = _get_upload_dir()
-log.info("Config upload directory: %s", UPLOAD_DIR)
-
-
-def _get_thumbnail_dir():
-    """Thumbnail directory. CONFIG_THUMBNAIL_DIR overrides; else derived from upload dir."""
-    env_dir = os.environ.get("CONFIG_THUMBNAIL_DIR")
-    if env_dir:
-        try:
-            os.makedirs(env_dir, exist_ok=True)
-            return env_dir
-        except (PermissionError, OSError) as e:
-            log.warning("CONFIG_THUMBNAIL_DIR %s not writable: %s", env_dir, e)
-    parent = os.path.dirname(UPLOAD_DIR.rstrip("/"))
-    return os.path.join(parent, "ppe-thumbnails")
-
-
-THUMBNAIL_DIR = _get_thumbnail_dir()
-log.info("Thumbnail directory: %s", THUMBNAIL_DIR)
 _VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv"}
 _THUMBNAIL_TIMESTAMP_S = 17.0
 
 
-def _is_local_video_path(path):
-    """True if path looks like a local file path to a video."""
+def _is_s3_video_path(path):
+    """True if path is a universal S3 object URI (s3://bucket/key)."""
     if not path or not isinstance(path, str):
         return False
-    p = path.strip()
-    if "://" in p:
-        return False
-    return any(p.lower().endswith(ext) for ext in _VIDEO_EXTENSIONS)
+    return path.strip().startswith("s3://")
+
+
+def _parse_s3_video_path(video_path):
+    """Parse S3 URI into (bucket, object_key). Returns None if not s3:// path."""
+    if not video_path or not isinstance(video_path, str):
+        return None
+    p = video_path.strip()
+    if p.startswith("s3://"):
+        parts = p[5:].split("/", 1)
+        if len(parts) == 2:
+            return (parts[0], parts[1])
+    return None
 
 
 def _generate_thumbnail(video_path):
-    """Generate a JPEG thumbnail from a video file using OpenCV. Returns path or None."""
-    if not os.path.isfile(video_path):
+    """Generate a JPEG thumbnail from S3 video, upload to MinIO. Returns S3 key or None."""
+    if _is_s3_video_path(video_path):
+        return _generate_thumbnail_s3(video_path)
+    return None
+
+
+def _generate_thumbnail_s3(video_path):
+    """Generate thumbnail from S3 video, upload to MinIO. Returns S3 key or None."""
+    parsed = _parse_s3_video_path(video_path)
+    if not parsed:
         return None
-    stem = os.path.splitext(os.path.basename(video_path))[0]
+    bucket, key = parsed
+    stem = os.path.splitext(os.path.basename(key))[0]
     if not stem:
         return None
+    thumb_key = f"thumbnails/{stem}.jpg"
+    if object_exists(bucket, thumb_key):
+        log.debug("Thumbnail already exists: %s/%s", bucket, thumb_key)
+        return thumb_key
     try:
-        os.makedirs(THUMBNAIL_DIR, exist_ok=True)
-        thumb_path = os.path.join(THUMBNAIL_DIR, stem + ".jpg")
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            log.warning("Could not open video for thumbnail: %s", video_path)
-            return None
-        fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-        frame_pos = int(_THUMBNAIL_TIMESTAMP_S * fps)
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_pos)
-        ret, frame = cap.read()
-        cap.release()
-        if ret and frame is not None:
-            if cv2.imwrite(thumb_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 85]):
-                log.info("Generated thumbnail: %s", thumb_path)
-                return thumb_path
-    except (OSError, Exception) as e:
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            download_file(bucket, key, tmp_path)
+            cap = cv2.VideoCapture(tmp_path)
+            if not cap.isOpened():
+                log.warning("Could not open video for thumbnail: %s", video_path)
+                return None
+            fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+            frame_pos = int(_THUMBNAIL_TIMESTAMP_S * fps)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_pos)
+            ret, frame = cap.read()
+            cap.release()
+            if ret and frame is not None:
+                ret_jpg, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                if ret_jpg:
+                    upload_bytes(bucket, thumb_key, buf.tobytes(), content_type="image/jpeg")
+                    log.info("Generated thumbnail: %s/%s", bucket, thumb_key)
+                    return thumb_key
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+    except Exception as e:
         log.warning("Thumbnail generation failed for %s: %s", video_path, e)
     return None
 
 
 @api.route("/thumbnails/<path:filename>")
 def serve_thumbnail(filename):
-    """Serve a thumbnail image by filename (e.g. video.jpg)."""
+    """Serve a thumbnail image by filename (e.g. video.jpg) from MinIO."""
     if ".." in filename or "/" in filename:
         return jsonify({"error": "Invalid filename"}), 400
     if not filename.lower().endswith(".jpg"):
         return jsonify({"error": "Only .jpg thumbnails are served"}), 400
-    if not os.path.isdir(THUMBNAIL_DIR):
-        return jsonify({"error": "Thumbnails directory not found"}), 404
-    path = os.path.join(THUMBNAIL_DIR, filename)
-    if not os.path.isfile(path):
-        return jsonify({"error": "Thumbnail not found"}), 404
-    return send_from_directory(THUMBNAIL_DIR, filename, mimetype="image/jpeg")
+    thumb_key = f"thumbnails/{filename}"
+    if object_exists(get_config_bucket(), thumb_key):
+        try:
+            resp = get_object_stream(get_config_bucket(), thumb_key)
+            try:
+                data = resp.read()
+                return Response(data, mimetype="image/jpeg")
+            finally:
+                resp.close()
+                resp.release_conn()
+        except Exception as e:
+            log.exception("serve_thumbnail: %s", e)
+            return jsonify({"error": "Failed to load thumbnail"}), 500
+    return jsonify({"error": "Thumbnail not found"}), 404
 
 
 @api.route("/config/upload", methods=["POST"])
 def config_upload():
-    """Upload a video file. Returns the path/URL for the video field."""
+    """Upload a video file to MinIO. Returns S3 URI for video_source (e.g. s3://config/uploads/filename.mp4)."""
     if "file" not in request.files:
         return jsonify({"error": "No file in request"}), 400
     f = request.files["file"]
@@ -507,10 +520,13 @@ def config_upload():
         return jsonify(
             {"error": "Only video files (mp4, avi, mov, mkv) are allowed"}
         ), 400
+    safe_name = os.path.basename(f.filename)
     try:
-        safe_name = os.path.basename(f.filename)
-        path = os.path.join(UPLOAD_DIR, safe_name)
-        f.save(path)
+        bucket = get_config_bucket()
+        object_key = f"uploads/{safe_name}"
+        data = f.read()
+        upload_bytes(bucket, object_key, data, content_type="video/mp4")
+        path = f"s3://{bucket}/{object_key}"
         return jsonify({"path": path, "filename": safe_name})
     except Exception as e:
         log.exception("config_upload: %s", e)

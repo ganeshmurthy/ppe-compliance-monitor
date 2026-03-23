@@ -120,8 +120,6 @@ services:
       dockerfile: Dockerfile
     image: ppe-compliance-monitor-backend:local
     command: ["app.py"]
-    volumes:
-      - ../../data/config:/data/config:z
     depends_on:
       data-loader:
         condition: service_completed_successfully
@@ -163,9 +161,8 @@ services:
       OPENAI_API_ENDPOINT: "${OPENAI_API_ENDPOINT}"
       OPENAI_MODEL: "${OPENAI_MODEL}"
       OPENAI_TEMPERATURE: "${OPENAI_TEMPERATURE:-0.7}"
-      # Persistent storage for uploaded videos and thumbnails (survives restarts)
-      CONFIG_UPLOAD_DIR: /data/config/uploads
-      CONFIG_THUMBNAIL_DIR: /data/config/thumbnails
+      # Config storage: MinIO (enables horizontal scaling)
+      CONFIG_BUCKET: config
     ports:
       - "8888:8888"
     networks:

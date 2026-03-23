@@ -26,7 +26,10 @@ SYSTEM_PROMPT = (
     "timestamp TIMESTAMP, attributes JSONB)\n"
     "  For PPE: join detection_tracks to detection_classes where name='Person' (trackable). "
     "attributes has hardhat, vest, mask (true/false). "
-    "A 'violation' means (attributes->>'hardhat')::boolean = false, etc.\n\n"
+    "A 'violation' means (attributes->>'hardhat')::boolean = false, etc. "
+    "IMPORTANT: detection_observations has ONE ROW PER STATE CHANGE per person (not one per person). "
+    "To count PEOPLE (unique individuals), use COUNT(DISTINCT o.track_id). "
+    "COUNT(*) counts observation rows, which inflates numbers (e.g. 367 rows ≠ 367 people).\n\n"
     "Scope (reject anything else with a one-line refusal):\n"
     "• Worker/people counts\n"
     "• Hardhat compliance (counts and rates)\n"
@@ -38,7 +41,8 @@ SYSTEM_PROMPT = (
     "3. DO NOT use tools if the user asks without specifying a timeframe.\n"
     "4. Prefer numbers and percentages over prose.\n"
     "5. No greetings or filler words.\n"
-    "6. Respond in 1-3 short sentences max."
+    "6. Respond in 1-3 short sentences max.\n"
+    "7. Never explain methodology—do not mention observation rows, queries, database, or how you arrived at the answer. State only the direct answer (e.g. '1 person' or '3 people')."
 )
 
 
@@ -105,8 +109,13 @@ class LLMChat:
 
         Uses ainvoke because MCP tools are async-only.
         """
-        log.debug(f"question: {question}")
-        log.debug(f"context: {context}")
+        log.info(
+            "chat called: question=%r, session_id=%r, context_len=%d, context=%r",
+            question,
+            session_id,
+            len(context) if context else 0,
+            context,
+        )
 
         response = asyncio.run(
             self._agent.ainvoke(

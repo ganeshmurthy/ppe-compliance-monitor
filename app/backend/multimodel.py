@@ -1,5 +1,7 @@
 import cv2
 import numpy as np
+import os
+import tempfile
 import threading
 import time
 import atexit
@@ -9,6 +11,7 @@ import queue
 from multiprocessing import Process, Queue, Event
 from multiprocessing.shared_memory import SharedMemory
 
+from minio_client import get_config_bucket, download_file
 from database import (
     init_database,
     insert_detection_track,
@@ -24,6 +27,34 @@ from response import process_detections
 from runtime import Runtime
 
 log = get_logger(__name__)
+
+
+def _resolve_video_source_to_path(video_source: str) -> tuple[str, str | None]:
+    """
+    Resolve video_source to a path cv2.VideoCapture can open.
+    Returns (path_to_use, temp_path_or_none). If temp_path is set, caller must delete it.
+    S3 URIs (s3://bucket/key) are downloaded to a temp file.
+    """
+    if not video_source or not isinstance(video_source, str):
+        return video_source or "", None
+    p = video_source.strip()
+    if p.startswith("s3://"):
+        parts = p[5:].split("/", 1)
+        if len(parts) == 2:
+            bucket, key = parts[0], parts[1]
+            fd, tmp_path = tempfile.mkstemp(suffix=".mp4")
+            os.close(fd)
+            try:
+                download_file(bucket, key, tmp_path)
+                return tmp_path, tmp_path
+            except Exception as e:
+                log.exception("Failed to download S3 video %s: %s", video_source, e)
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+    return video_source, None
 
 
 # --- Module-level helpers (used by both main and inference process) ---
@@ -481,6 +512,7 @@ class MultiModalAIDemo:
         self._shm_initialized = False
         self._results_consumer_thread = None
         self._active_config_id = None
+        self._s3_temp_path = None  # Temp file for S3 video; cleaned on switch/shutdown
 
     def setup_components(self):
         """Initialize DB, queues, and results consumer. Call start_streaming() when user selects a source."""
@@ -535,6 +567,14 @@ class MultiModalAIDemo:
             self.cap.release()
             self.cap = None
 
+        # Clean up previous S3 temp file if any
+        if self._s3_temp_path:
+            try:
+                os.unlink(self._s3_temp_path)
+            except OSError:
+                pass
+            self._s3_temp_path = None
+
         self.video_source = video_source
         self._reconnect_needed = False
         self._shm_initialized = False
@@ -559,13 +599,16 @@ class MultiModalAIDemo:
             config_id,
         )
 
+        # Resolve S3 paths to local temp file (cv2.VideoCapture needs local path)
+        path_to_open, self._s3_temp_path = _resolve_video_source_to_path(video_source)
+
         # Clear stale error so UI shows "Processing..." while new inference starts
         with self._display_lock:
             self._display_description = "Processing video..."
             self._display_detections = []
             self._results_received_count = 0
 
-        self.cap = cv2.VideoCapture(video_source)
+        self.cap = cv2.VideoCapture(path_to_open)
         if not self.cap.isOpened():
             log.warning("Stream not ready, retrying until connected...")
             attempt = 0
@@ -574,7 +617,7 @@ class MultiModalAIDemo:
                 if self.cap is not None:
                     self.cap.release()
                     self.cap = None
-                self.cap = cv2.VideoCapture(video_source)
+                self.cap = cv2.VideoCapture(path_to_open)
                 if self.cap.isOpened():
                     log.info("Stream connected (attempt %d)", attempt + 1)
                     break
@@ -624,6 +667,12 @@ class MultiModalAIDemo:
             if self._inference_process.is_alive():
                 self._inference_process.terminate()
             self._inference_process = None
+        if self._s3_temp_path:
+            try:
+                os.unlink(self._s3_temp_path)
+            except OSError:
+                pass
+            self._s3_temp_path = None
         if self._shm is not None:
             try:
                 self._shm.close()
@@ -695,9 +744,8 @@ class MultiModalAIDemo:
             log.info("Frame reader: thread exiting")
 
     def _is_file_source(self):
-        """True if video_source is a local file path (not rtsp/http stream)."""
         s = (self.video_source or "").strip()
-        return s and "://" not in s
+        return s.startswith("s3://")
 
     def _frame_reader_loop_impl(self):
         fail_count = 0

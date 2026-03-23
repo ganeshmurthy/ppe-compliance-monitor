@@ -18,10 +18,6 @@ spec:
         {{- include "ppe-compliance-monitor.labels" . | nindent 8 }}
         app.kubernetes.io/component: backend
     spec:
-      {{- if and .Values.backend.configStorage .Values.backend.configStorage.enabled }}
-      securityContext:
-        fsGroup: 1001
-      {{- end }}
       {{- if not .Values.videoStream.streamUrl }}
       initContainers:
         - name: wait-for-video-stream
@@ -86,6 +82,8 @@ spec:
               value: {{ .Values.backend.modelVersion | quote }}
             - name: OPENSHIFT
               value: "true"
+            - name: RUNTIME_TYPE
+              value: {{ .Values.modelServing.runtimeType | quote }}
             - name: OPENAI_API_TOKEN
               value: {{ .Values.openai.apiToken | quote }}
             - name: OPENAI_API_ENDPOINT
@@ -108,24 +106,11 @@ spec:
             - name: LOG_LEVEL
               value: {{ .Values.backend.logLevel | quote }}
             {{- if and .Values.backend.configStorage .Values.backend.configStorage.enabled }}
-            - name: CONFIG_UPLOAD_DIR
-              value: /data/config/uploads
-            - name: CONFIG_THUMBNAIL_DIR
-              value: /data/config/thumbnails
+            - name: CONFIG_BUCKET
+              value: config
             {{- end }}
             {{- if .Values.postgresMcp.enabled }}
             - name: POSTGRES_MCP_URL
               value: "http://{{ include "ppe-compliance-monitor.fullname" . }}-postgres-mcp:{{ .Values.postgresMcp.port }}/sse"
             {{- end }}
             {{- end }}
-          {{- if and .Values.backend.configStorage .Values.backend.configStorage.enabled }}
-          volumeMounts:
-            - name: config-data
-              mountPath: /data/config
-          {{- end }}
-      {{- if and .Values.backend.configStorage .Values.backend.configStorage.enabled }}
-      volumes:
-        - name: config-data
-          persistentVolumeClaim:
-            claimName: {{ include "ppe-compliance-monitor.fullname" . }}-backend-config
-      {{- end }}
