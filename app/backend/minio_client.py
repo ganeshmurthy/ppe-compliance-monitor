@@ -1,5 +1,6 @@
 """MinIO client helper for downloading model and video files."""
 
+import io
 import os
 import time
 from minio import Minio
@@ -8,6 +9,14 @@ from urllib.parse import urlparse
 from logger import get_logger
 
 log = get_logger(__name__)
+
+# Config bucket for user uploads and thumbnails (enables horizontal scaling)
+CONFIG_BUCKET = os.getenv("CONFIG_BUCKET", "config")
+
+
+def get_config_bucket():
+    """Return the MinIO bucket name for config uploads and thumbnails."""
+    return CONFIG_BUCKET
 
 
 def get_minio_client():
@@ -76,3 +85,70 @@ def download_file(
             else:
                 log.error(f"Download failed after {max_retries} attempts: {e}")
                 raise
+
+
+def upload_file(
+    bucket: str,
+    object_name: str,
+    file_path: str,
+    content_type: str | None = None,
+) -> None:
+    """
+    Upload a file from the local filesystem to MinIO.
+
+    Args:
+        bucket: MinIO bucket name
+        object_name: Object key/path in the bucket
+        file_path: Local filesystem path to the file
+        content_type: Optional MIME type (e.g. 'video/mp4', 'image/jpeg')
+    """
+    client = get_minio_client()
+    client.fput_object(bucket, object_name, file_path, content_type=content_type)
+    log.info("Uploaded %s to %s/%s", file_path, bucket, object_name)
+
+
+def upload_bytes(
+    bucket: str,
+    object_name: str,
+    data: bytes,
+    content_type: str | None = None,
+) -> None:
+    """
+    Upload bytes to MinIO.
+
+    Args:
+        bucket: MinIO bucket name
+        object_name: Object key/path in the bucket
+        data: Raw bytes to upload
+        content_type: Optional MIME type
+    """
+    client = get_minio_client()
+    client.put_object(
+        bucket,
+        object_name,
+        io.BytesIO(data),
+        length=len(data),
+        content_type=content_type,
+    )
+    log.info("Uploaded %d bytes to %s/%s", len(data), bucket, object_name)
+
+
+def get_object_stream(bucket: str, object_name: str):
+    """
+    Get an object from MinIO as a stream.
+
+    Returns:
+        Response object with .read() and .stream() - use iter_content or read().
+    """
+    client = get_minio_client()
+    return client.get_object(bucket, object_name)
+
+
+def object_exists(bucket: str, object_name: str) -> bool:
+    """Check if an object exists in MinIO."""
+    try:
+        client = get_minio_client()
+        client.stat_object(bucket, object_name)
+        return True
+    except S3Error:
+        return False

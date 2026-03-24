@@ -1,11 +1,28 @@
 from flask import Flask, Response, request, jsonify, Blueprint
 from flask_cors import CORS
 import cv2
+import json
+import os
+import tempfile
 import time
+from datetime import datetime
 
+from minio_client import (
+    get_config_bucket,
+    download_file,
+    upload_bytes,
+    get_object_stream,
+    object_exists,
+)
 from multimodel import MultiModalAIDemo
 from llm import LLMChat
-import os
+from database import (
+    get_all_configs,
+    get_config_by_id,
+    insert_config,
+    update_config,
+    replace_detection_classes,
+)
 from logger import get_logger
 
 log = get_logger(__name__)
@@ -25,26 +42,10 @@ else:
 CORS(app, resources={r"/*": {"origins": cors_allowed_origins}})
 
 
-def get_video_source():
-    """
-    Get video stream URL. Always streams (no file mode).
-
-    VIDEO_STREAM_URL: RTSP/HTTP stream URL (live camera or MP4 simulation via MediaMTX).
-    """
-    stream_url = os.getenv("VIDEO_STREAM_URL", "").strip()
-    if not stream_url:
-        raise SystemExit(
-            "VIDEO_STREAM_URL is required. Set it to an RTSP/HTTP stream URL "
-            "(e.g. rtsp://video-stream:8554/live for local, or rtsp://camera-ip:554/stream for real camera)."
-        )
-    log.info(f"Using video stream: {stream_url}")
-    return stream_url
-
-
-video_source = get_video_source()
-demo = MultiModalAIDemo(video_source)
+# Video source is selected dynamically by the user (MP4 or RTSP from config).
+demo = MultiModalAIDemo()
 demo.setup_components()
-log.info("MultiModalAIDemo initialized and components ready")
+log.info("MultiModalAIDemo initialized (source: user-selected from UI)")
 
 llm_chat = LLMChat()
 
@@ -70,11 +71,10 @@ def generate_response_frames():
     continues without yielding. Duplicate frames (same frame_id) are skipped.
     """
     global latest_description, latest_summary
-    log.info("Video feed: client connected")
+    log.info("Video feed: client connected, starting frame loop")
     none_count = 0
     last_none_log = 0.0
     frame_count = 0
-    last_frame_log = 0.0
     last_sent_frame_id = None
     try:
         while True:
@@ -107,12 +107,10 @@ def generate_response_frames():
                 continue
             h_frame, w_frame = annotated_frame.shape[:2]
             # Draw bounding boxes and labels for each detection (Person, PPE items)
-            # Use LINE_AA for antialiasing to reduce JPEG compression artifacts
             line_type = cv2.LINE_AA
             for detection in detections:
                 x1, y1, x2, y2 = detection["bbox"]
                 x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
-                # Clip to frame bounds to avoid drawing artifacts
                 x1 = max(0, min(x1, w_frame - 1))
                 y1 = max(0, min(y1, h_frame - 1))
                 x2 = max(0, min(x2, w_frame - 1))
@@ -121,7 +119,6 @@ def generate_response_frames():
                     continue
                 conf = detection["confidence"]
                 currentClass = detection["class_name"]
-
                 if conf > 0.5:
                     if currentClass == "Person":
                         color = (0, 255, 255)  # Cyan for person
@@ -131,7 +128,6 @@ def generate_response_frames():
                         color = (0, 255, 0)  # Green for compliance
                     else:
                         color = (255, 255, 0)  # Yellow for other objects
-
                     cv2.rectangle(
                         annotated_frame,
                         (x1, y1),
@@ -140,8 +136,6 @@ def generate_response_frames():
                         2,
                         lineType=line_type,
                     )
-
-                    # Add text label; clip label position to avoid negative coords (causes distortion)
                     label = f"{currentClass} {conf:.2f}"
                     if (
                         currentClass == "Person"
@@ -192,15 +186,6 @@ def generate_response_frames():
             frame_bytes = buffer.tobytes()
             frame_count += 1
             last_sent_frame_id = frame_id
-            now = time.time()
-            if now - last_frame_log >= 10.0:
-                log.debug("Video feed: sent %d frames (stream active)", frame_count)
-                last_frame_log = now
-            # Frame writer: log before/after yield to detect if browser stopped consuming
-            if frame_count % 10 == 0:
-                log.debug(
-                    "Frame writer: about to send frame %d to browser", frame_count
-                )
             try:
                 # Content-Length helps Chrome parse each part correctly (avoids distortion from boundary misparsing)
                 header = (
@@ -209,10 +194,6 @@ def generate_response_frames():
                     b"Content-Length: " + str(len(frame_bytes)).encode() + b"\r\n\r\n"
                 )
                 yield header + frame_bytes + b"\r\n"
-                if frame_count % 10 == 0:
-                    log.debug(
-                        "Frame writer: sent frame %d (browser consumed)", frame_count
-                    )
             except (BrokenPipeError, ConnectionResetError, OSError) as e:
                 log.warning("Video feed: client connection lost during yield: %s", e)
                 break
@@ -250,7 +231,14 @@ def latest_info():
         if demo._display_description:
             latest_description = demo._display_description
         latest_summary = demo._display_summary or demo.latest_summary or latest_summary
-    return jsonify({"description": latest_description, "summary": latest_summary})
+        inference_ready = demo._results_received_count > 0
+    return jsonify(
+        {
+            "description": latest_description,
+            "summary": latest_summary,
+            "inference_ready": inference_ready,
+        }
+    )
 
 
 @api.route("/chat", methods=["POST"])
@@ -284,6 +272,269 @@ def chat():
         session_id=session_id,
     )
     return jsonify({"answer": answer})
+
+
+def _parse_classes(value: str | dict) -> tuple[dict, list[tuple[int, str, bool]]]:
+    """
+    Parse classes from new JSON format. Returns (mapping, entries).
+    Format: {"0":{"name":"Person","trackable":true},"1":{"name":"Hardhat","trackable":false}}
+    mapping: {"0":"Person","1":"Hardhat"} for app_config.classes
+    entries: [(model_class_index, name, trackable), ...] for detection_classes
+    """
+    if value is None:
+        raise ValueError("Classes cannot be empty")
+    obj = value if isinstance(value, dict) else json.loads(str(value).strip())
+    if not isinstance(obj, dict):
+        raise ValueError(
+            'Classes must be an object like {"0":{"name":"Person","trackable":true}}'
+        )
+    if not obj:
+        raise ValueError("Classes cannot be empty")
+    mapping = {}
+    entries = []
+    for idx_str, v in obj.items():
+        if not isinstance(v, dict):
+            raise ValueError(
+                f'Class "{idx_str}" must be an object with "name" and "trackable"'
+            )
+        name = v.get("name")
+        if not name or not str(name).strip():
+            raise ValueError(f'Class "{idx_str}" must have a non-empty "name"')
+        name = str(name).strip()
+        trackable = bool(v.get("trackable", False))
+        try:
+            model_class_index = int(idx_str)
+        except ValueError:
+            raise ValueError(f'Class key "{idx_str}" must be an integer (model index)')
+        mapping[idx_str] = name
+        entries.append((model_class_index, name, trackable))
+    return mapping, entries
+
+
+@api.route("/config", methods=["GET"])
+def config_list():
+    """List all app configs."""
+    try:
+        configs = get_all_configs()
+        # Ensure classes is JSON-serializable (PostgreSQL JSONB may return dict)
+        for c in configs:
+            if isinstance(c.get("created_at"), datetime):
+                c["created_at"] = c["created_at"].isoformat()
+        return jsonify(configs)
+    except Exception as e:
+        log.exception("config_list: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@api.route("/config", methods=["POST"])
+def config_create():
+    """Create a new app config."""
+    data = request.get_json(silent=True) or {}
+    model_url = (data.get("model_url") or "").strip()
+    video_source = (data.get("video_source") or "").strip()
+    classes_raw = data.get("classes")
+    if classes_raw is None:
+        return jsonify({"error": "Field 'classes' is required"}), 400
+    try:
+        classes, entries = _parse_classes(classes_raw)
+    except (ValueError, json.JSONDecodeError) as e:
+        return jsonify({"error": str(e)}), 400
+    if not model_url:
+        return jsonify({"error": "Field 'model_url' is required"}), 400
+    if not video_source:
+        return jsonify({"error": "Field 'video_source' is required"}), 400
+    try:
+        config_id = insert_config(model_url, video_source)
+        replace_detection_classes(config_id, entries)
+        if _is_s3_video_path(video_source):
+            _generate_thumbnail(video_source)
+        return jsonify({"id": config_id, "message": "Config created"}), 201
+    except Exception as e:
+        log.exception("config_create: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@api.route("/config/<int:config_id>", methods=["PUT"])
+def config_update(config_id):
+    """Update an existing app config."""
+    data = request.get_json(silent=True) or {}
+    model_url = (data.get("model_url") or "").strip()
+    video_source = (data.get("video_source") or "").strip()
+    classes_raw = data.get("classes")
+    if classes_raw is None:
+        return jsonify({"error": "Field 'classes' is required"}), 400
+    try:
+        classes, entries = _parse_classes(classes_raw)
+    except (ValueError, json.JSONDecodeError) as e:
+        return jsonify({"error": str(e)}), 400
+    if not model_url:
+        return jsonify({"error": "Field 'model_url' is required"}), 400
+    if not video_source:
+        return jsonify({"error": "Field 'video_source' is required"}), 400
+    try:
+        replace_detection_classes(config_id, entries)
+        updated = update_config(config_id, model_url, video_source)
+        if not updated:
+            return jsonify({"error": "Config not found"}), 404
+        if _is_s3_video_path(video_source):
+            _generate_thumbnail(video_source)
+        return jsonify({"message": "Config updated"})
+    except Exception as e:
+        log.exception("config_update: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@api.route("/active_config", methods=["POST"])
+def active_config_set():
+    """Set the active video source from a config. Switches to that config's video (MP4 path or RTSP URL)."""
+    data = request.get_json(silent=True) or {}
+    config_id = data.get("config_id")
+    if config_id is None:
+        return jsonify({"error": "Field 'config_id' is required"}), 400
+    try:
+        config_id = int(config_id)
+    except (ValueError, TypeError):
+        return jsonify({"error": "config_id must be an integer"}), 400
+    config = get_config_by_id(config_id)
+    if not config:
+        return jsonify({"error": "Config not found"}), 404
+    video_source = (config.get("video_source") or "").strip()
+    if not video_source:
+        return jsonify({"error": "Config has no video source"}), 400
+    try:
+        demo.start_streaming(video_source, config_id=config_id)
+        return jsonify({"message": "Active config set", "video_source": video_source})
+    except Exception as e:
+        log.exception("active_config_set: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+# Config storage: MinIO only (enables horizontal scaling)
+log.info("Config storage: MinIO bucket=%s", get_config_bucket())
+
+_VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv"}
+_THUMBNAIL_TIMESTAMP_S = 17.0
+
+
+def _is_s3_video_path(path):
+    """True if path is a universal S3 object URI (s3://bucket/key)."""
+    if not path or not isinstance(path, str):
+        return False
+    return path.strip().startswith("s3://")
+
+
+def _parse_s3_video_path(video_path):
+    """Parse S3 URI into (bucket, object_key). Returns None if not s3:// path."""
+    if not video_path or not isinstance(video_path, str):
+        return None
+    p = video_path.strip()
+    if p.startswith("s3://"):
+        parts = p[5:].split("/", 1)
+        if len(parts) == 2:
+            return (parts[0], parts[1])
+    return None
+
+
+def _generate_thumbnail(video_path):
+    """Generate a JPEG thumbnail from S3 video, upload to MinIO. Returns S3 key or None."""
+    if _is_s3_video_path(video_path):
+        return _generate_thumbnail_s3(video_path)
+    return None
+
+
+def _generate_thumbnail_s3(video_path):
+    """Generate thumbnail from S3 video, upload to MinIO. Returns S3 key or None."""
+    parsed = _parse_s3_video_path(video_path)
+    if not parsed:
+        return None
+    bucket, key = parsed
+    stem = os.path.splitext(os.path.basename(key))[0]
+    if not stem:
+        return None
+    thumb_key = f"thumbnails/{stem}.jpg"
+    if object_exists(bucket, thumb_key):
+        log.debug("Thumbnail already exists: %s/%s", bucket, thumb_key)
+        return thumb_key
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            download_file(bucket, key, tmp_path)
+            cap = cv2.VideoCapture(tmp_path)
+            if not cap.isOpened():
+                log.warning("Could not open video for thumbnail: %s", video_path)
+                return None
+            fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+            frame_pos = int(_THUMBNAIL_TIMESTAMP_S * fps)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_pos)
+            ret, frame = cap.read()
+            cap.release()
+            if ret and frame is not None:
+                ret_jpg, buf = cv2.imencode(
+                    ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85]
+                )
+                if ret_jpg:
+                    upload_bytes(
+                        bucket, thumb_key, buf.tobytes(), content_type="image/jpeg"
+                    )
+                    log.info("Generated thumbnail: %s/%s", bucket, thumb_key)
+                    return thumb_key
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+    except Exception as e:
+        log.warning("Thumbnail generation failed for %s: %s", video_path, e)
+    return None
+
+
+@api.route("/thumbnails/<path:filename>")
+def serve_thumbnail(filename):
+    """Serve a thumbnail image by filename (e.g. video.jpg) from MinIO."""
+    if ".." in filename or "/" in filename:
+        return jsonify({"error": "Invalid filename"}), 400
+    if not filename.lower().endswith(".jpg"):
+        return jsonify({"error": "Only .jpg thumbnails are served"}), 400
+    thumb_key = f"thumbnails/{filename}"
+    if object_exists(get_config_bucket(), thumb_key):
+        try:
+            resp = get_object_stream(get_config_bucket(), thumb_key)
+            try:
+                data = resp.read()
+                return Response(data, mimetype="image/jpeg")
+            finally:
+                resp.close()
+                resp.release_conn()
+        except Exception as e:
+            log.exception("serve_thumbnail: %s", e)
+            return jsonify({"error": "Failed to load thumbnail"}), 500
+    return jsonify({"error": "Thumbnail not found"}), 404
+
+
+@api.route("/config/upload", methods=["POST"])
+def config_upload():
+    """Upload a video file to MinIO. Returns S3 URI for video_source (e.g. s3://config/uploads/filename.mp4)."""
+    if "file" not in request.files:
+        return jsonify({"error": "No file in request"}), 400
+    f = request.files["file"]
+    if not f.filename:
+        return jsonify({"error": "No filename"}), 400
+    if not f.filename.lower().endswith((".mp4", ".avi", ".mov", ".mkv")):
+        return jsonify(
+            {"error": "Only video files (mp4, avi, mov, mkv) are allowed"}
+        ), 400
+    safe_name = os.path.basename(f.filename)
+    try:
+        bucket = get_config_bucket()
+        object_key = f"uploads/{safe_name}"
+        data = f.read()
+        upload_bytes(bucket, object_key, data, content_type="video/mp4")
+        path = f"s3://{bucket}/{object_key}"
+        return jsonify({"path": path, "filename": safe_name})
+    except Exception as e:
+        log.exception("config_upload: %s", e)
+        return jsonify({"error": str(e)}), 500
 
 
 app.register_blueprint(api)

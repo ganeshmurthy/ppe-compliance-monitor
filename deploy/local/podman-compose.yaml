@@ -134,9 +134,7 @@ services:
     environment:
       CORS_ORIGINS: "http://localhost:3000,http://0.0.0.0:3000,http://127.0.0.1:3000"
       POSTGRES_MCP_URL: "http://postgres-mcp:8000/sse"
-      # Video stream (RTSP) - set via Makefile VIDEO_STREAM_URL or env
-      VIDEO_STREAM_URL: ${VIDEO_STREAM_URL:-rtsp://video-stream:8554/live}
-      # MinIO configuration (for model; video comes from stream when VIDEO_STREAM_URL set)
+      # MinIO configuration (for model; video source selected from UI)
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
@@ -145,12 +143,10 @@ services:
       MINIO_MODEL_KEY: ppe.pt
       MINIO_VIDEO_BUCKET: data
       MINIO_VIDEO_KEY: combined-video-no-gap-rooftop.mp4
-      # Additional runtime.py env vars
-      # SERVICE_URL: "host.containers.internal:4442"
+      # Additional runtime.py env vars (model_url comes from config)
       # MODEL_INPUT_NAME: "x"
       # MODEL_NAME: "yolo"
       # MODEL_VERSION: "1"
-      SERVICE_URL: "ovms:8081"
       MODEL_INPUT_NAME: "x"
       MODEL_NAME: "ppe"
       MODEL_VERSION: "1"
@@ -165,6 +161,8 @@ services:
       OPENAI_API_ENDPOINT: "${OPENAI_API_ENDPOINT}"
       OPENAI_MODEL: "${OPENAI_MODEL}"
       OPENAI_TEMPERATURE: "${OPENAI_TEMPERATURE:-0.7}"
+      # Config storage: MinIO (enables horizontal scaling)
+      CONFIG_BUCKET: config
     ports:
       - "8888:8888"
     networks:

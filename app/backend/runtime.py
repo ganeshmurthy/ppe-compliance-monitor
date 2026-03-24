@@ -24,8 +24,15 @@ NUMPY_DTYPE_MAP = {
 
 
 class Runtime:
-    def __init__(self):
-        self.service_url = os.getenv("SERVICE_URL")
+    def __init__(
+        self, classes: dict[int, str] | None = None, service_url: str | None = None
+    ):
+        self.service_url = service_url
+        if not self.service_url or not str(self.service_url).strip():
+            raise ValueError(
+                "Runtime requires service_url (model_url from config). "
+                "Add a config with an inferencing URL via the Config dialog."
+            )
         self.input_name = os.getenv("MODEL_INPUT_NAME")
         self.model_name = os.getenv("MODEL_NAME")
         self.model_version = int(os.getenv("MODEL_VERSION"))
@@ -44,19 +51,13 @@ class Runtime:
         else:
             self._grpc_client = make_grpc_client(self.service_url)
             self.inference_fun = self.local_inference
-        # 10 PPE classes from the model metadata
-        self.CLASSES = {
-            0: "Hardhat",
-            1: "Mask",
-            2: "NO-Hardhat",
-            3: "NO-Mask",
-            4: "NO-Safety Vest",
-            5: "Person",
-            6: "Safety Cone",
-            7: "Safety Vest",
-            8: "machinery",
-            9: "vehicle",
-        }
+        if not classes or len(classes) == 0:
+            raise ValueError(
+                "Runtime requires classes from detection_classes. "
+                "Set ACTIVE_CONFIG_ID to a valid app_config id."
+            )
+        self.CLASSES = classes
+        log.info("Runtime using %d classes from config", len(self.CLASSES))
 
     def preprocess_image(self, image: np.ndarray):
         """

@@ -11,7 +11,6 @@ help:
 	@echo "  deploy     - Deploy to OpenShift with GPU runtime (default)"
 	@echo "  deploy-gpu - Deploy with GPU runtime (kserve/Triton) - same as deploy"
 	@echo "  deploy-openvino - Deploy with CPU runtime (OpenVINO Model Server)"
-	@echo "             Use VIDEO_STREAM_URL=rtsp://... for real camera"
 	@echo "  undeploy   - Remove manifests from OpenShift"
 	@echo "  dev-backend - Create venv, install deps, run backend"
 	@echo "  dev-frontend - Install deps and run frontend"
@@ -27,11 +26,6 @@ endif
 
 COMPOSE_FILE ?= $(CURDIR)/deploy/local/podman-compose.yaml
 NAMESPACE ?= ppe-compliance-monitor-demo
-# Video stream URL - for local-up, dev-backend, and deploy
-# Local default: rtsp://video-stream:8554/live (MediaMTX in compose)
-# make deploy (no args): in-cluster MP4 simulation (video-stream stack)
-# make deploy VIDEO_STREAM_URL=rtsp://user:pass@camera-ip:554/stream: real camera
-VIDEO_STREAM_URL ?= rtsp://video-stream:8554/live
 PLATFORM_RELEASE ?= linux/amd64
 PLATFORM_LOCAL ?= $(shell uname -m | sed -e 's/x86_64/linux\/amd64/' -e 's/arm64/linux\/arm64/' -e 's/aarch64/linux\/arm64/')
 
@@ -73,7 +67,7 @@ check-openai-env:
 	fi
 
 local-build-up: kill-ports local-down
-	VIDEO_STREAM_URL="$(VIDEO_STREAM_URL)" PODMAN_DEFAULT_PLATFORM=$(PLATFORM_LOCAL) podman-compose -f $(COMPOSE_FILE) up --build
+	PODMAN_DEFAULT_PLATFORM=$(PLATFORM_LOCAL) podman-compose -f $(COMPOSE_FILE) up --build
 
 local-build:
 	@should_build=0; \
@@ -122,9 +116,6 @@ deploy: check-openai-env
 		--set data.image.tag=$(IMAGE_TAG) \
 		--set modelServing.runtimeType=$(RUNTIME_TYPE) \
 		$${host:+--set openshift.sharedHost=$$host}"; \
-	if [ -n "$(VIDEO_STREAM_URL)" ] && [ "$(VIDEO_STREAM_URL)" != "rtsp://video-stream:8554/live" ]; then \
-		helm_args="$$helm_args --set videoStream.streamUrl=$(VIDEO_STREAM_URL)"; \
-	fi; \
 	helm upgrade --install $(HELM_RELEASE) $(HELM_CHART) \
 		--namespace $(NAMESPACE) --create-namespace $$helm_args
 

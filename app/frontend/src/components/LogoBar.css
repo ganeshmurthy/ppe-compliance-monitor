@@ -8,6 +8,21 @@
     z-index: 1000;
 }
 
+.logo-bar-config-btn {
+    padding: 8px 16px;
+    background-color: #333;
+    color: #fff;
+    border: 1px solid #555;
+    border-radius: 4px;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+.logo-bar-config-btn:hover {
+    background-color: #0071c5;
+    border-color: #0060a8;
+}
+
 .logo {
     height: 50px;
     width: auto;

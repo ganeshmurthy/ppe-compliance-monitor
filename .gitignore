@@ -45,3 +45,9 @@ yolov8n.pt
 
 # Jupyter notebook checkpoints
 .ipynb_checkpoints/
+
+# Uploaded videos (config page)
+app/data/uploads/
+
+# Config uploads and thumbnails (local dev)
+data/config/

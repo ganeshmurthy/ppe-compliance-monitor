@@ -18,6 +18,7 @@ echo "MinIO connection established"
 echo "Creating buckets..."
 mc mb --ignore-existing myminio/models
 mc mb --ignore-existing myminio/data
+mc mb --ignore-existing myminio/config
 echo "Buckets ready"
 
 RUNTIME_TYPE="${RUNTIME_TYPE}"

@@ -1,11 +1,17 @@
 import React from 'react';
 import './LogoBar.css';
 
-const LogoBar = () => {
+const LogoBar = ({ onConfigClick }) => {
   return (
     <div className="logo-bar">
+      <button
+        className="logo-bar-config-btn"
+        onClick={onConfigClick}
+        type="button"
+      >
+        Config
+      </button>
       <img src="/redhat-logo.png" alt="Red Hat Logo" className="logo redhat-logo" />
-      <img src="/intel-logo.jpg" alt="Intel Logo" className="logo intel-logo" />
     </div>
   );
 };
