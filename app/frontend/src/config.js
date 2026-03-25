@@ -5,6 +5,15 @@ const normalizeApiUrl = (value) => {
   if (value.startsWith('/')) {
     return value;
   }
+  if (
+    typeof window !== 'undefined' &&
+    window.location.protocol === 'https:' &&
+    value.startsWith('http://') &&
+    !value.includes('localhost') &&
+    !value.includes('127.0.0.1')
+  ) {
+    return value.replace(/^http:\/\//, 'https://');
+  }
   if (value.startsWith('http://') || value.startsWith('https://')) {
     return value;
   }

@@ -11,3 +11,8 @@ dependencies:
   - name: minio
     version: 0.5.4
     repository: https://rh-ai-quickstart.github.io/ai-architecture-charts
+  - name: label-studio
+    version: 0.1.0
+    repository: file://../label-studio
+    alias: labelStudio
+    condition: labelStudio.enabled

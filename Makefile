@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help local-up local-build-up local-down build push deploy deploy-gpu deploy-openvino undeploy dev-backend dev-frontend local-build build-push-data kill-ports check-openai-env eval eval-k8s
+.PHONY: help local-up local-build-up local-down build push deploy deploy-gpu deploy-openvino deploy-openvino-labelstudio deploy-labelstudio undeploy dev-backend dev-frontend local-build build-push-data kill-ports check-openai-env eval eval-k8s
 help:
 	@echo "Available targets:"
 	@echo "  local-up   - Start local stack with Podman Compose"
@@ -11,6 +11,8 @@ help:
 	@echo "  deploy     - Deploy to OpenShift with GPU runtime (default)"
 	@echo "  deploy-gpu - Deploy with GPU runtime (kserve/Triton) - same as deploy"
 	@echo "  deploy-openvino - Deploy with CPU runtime (OpenVINO Model Server)"
+	@echo "  deploy-openvino-labelstudio - Deploy OpenVINO runtime with Label Studio enabled"
+	@echo "  deploy-labelstudio - Deploy and enable Label Studio"
 	@echo "  undeploy   - Remove manifests from OpenShift"
 	@echo "  dev-backend - Create venv, install deps, run backend"
 	@echo "  dev-frontend - Install deps and run frontend"
@@ -47,6 +49,7 @@ HELM_RELEASE ?= ppe-compliance-monitor
 HELM_CHART ?= deploy/helm/ppe-compliance-monitor
 # Model serving runtime: "kserve" (GPU/Triton) or "openvino" (CPU/OVMS)
 RUNTIME_TYPE ?= kserve
+LABEL_STUDIO_ENABLED ?=
 
 check-openai-env:
 	@token="$(OPENAI_API_TOKEN)"; \
@@ -105,8 +108,10 @@ deploy: check-openai-env
 	if [ -n "$(NAMESPACE)" ]; then oc new-project "$(NAMESPACE)" --display-name="$(NAMESPACE)" >/dev/null 2>&1 || oc project "$(NAMESPACE)"; fi; \
 	if [ -n "$$domain" ]; then \
 		host="$(HELM_RELEASE)-$(NAMESPACE).$$domain"; \
+		ls_host="$(HELM_RELEASE)-ls-$(NAMESPACE).$$domain"; \
 	else \
 		host=""; \
+		ls_host=""; \
 	fi; \
 	helm_args="--set backend.image.repository=$(IMAGE_REPOSITORY)-backend \
 		--set backend.image.tag=$(IMAGE_TAG) \
@@ -115,7 +120,9 @@ deploy: check-openai-env
 		--set data.image.repository=$(IMAGE_REPOSITORY)-data \
 		--set data.image.tag=$(IMAGE_TAG) \
 		--set modelServing.runtimeType=$(RUNTIME_TYPE) \
-		$${host:+--set openshift.sharedHost=$$host}"; \
+		$(if $(strip $(LABEL_STUDIO_ENABLED)),--set labelStudio.enabled=$(LABEL_STUDIO_ENABLED),) \
+		$${host:+--set openshift.sharedHost=$$host} \
+		$${ls_host:+--set labelStudio.route.host=$$ls_host}"; \
 	helm upgrade --install $(HELM_RELEASE) $(HELM_CHART) \
 		--namespace $(NAMESPACE) --create-namespace $$helm_args
 
@@ -124,6 +131,12 @@ deploy-gpu: ## Deploy with GPU runtime (kserve/Triton) - same as default deploy
 
 deploy-openvino: ## Deploy with CPU runtime (OpenVINO Model Server)
 	$(MAKE) deploy RUNTIME_TYPE=openvino
+
+deploy-openvino-labelstudio: ## Deploy OpenVINO runtime with Label Studio enabled
+	$(MAKE) deploy RUNTIME_TYPE=openvino LABEL_STUDIO_ENABLED=true
+
+deploy-labelstudio: ## Deploy with Label Studio enabled
+	$(MAKE) deploy LABEL_STUDIO_ENABLED=true
 
 undeploy:
 	@if [ -n "$(NAMESPACE)" ]; then oc project "$(NAMESPACE)"; fi

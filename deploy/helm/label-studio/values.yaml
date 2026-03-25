@@ -1,0 +1,51 @@
+enabled: false
+nameOverride: ""
+fullnameOverride: ""
+
+global:
+  releaseName: ""
+  chartName: ""
+
+replicas: 1
+
+image:
+  repository: heartexlabs/label-studio
+  tag: latest
+  pullPolicy: IfNotPresent
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 2Gi
+
+service:
+  port: 8080
+
+route:
+  enabled: true
+  host: ""
+  tls:
+    enabled: true
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+
+app:
+  host: ""
+  csrfTrustedOrigins: ""
+
+storage:
+  size: 5Gi
+
+database:
+  host: ""
+  port: "5432"
+  name: ""
+  user: ""
+  password: ""
+
+auth:
+  existingSecretName: ""
+  secretKey: ""

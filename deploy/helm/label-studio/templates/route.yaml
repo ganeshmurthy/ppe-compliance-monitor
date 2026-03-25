@@ -1,0 +1,23 @@
+{{- if and .Values.enabled .Values.route.enabled }}
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: {{ printf "%s-ls" .Release.Name | trunc 30 | trimSuffix "-" }}
+  labels:
+    {{- include "label-studio.labels" . | nindent 4 }}
+    app.kubernetes.io/component: labelstudio
+spec:
+  {{- if .Values.route.host }}
+  host: {{ .Values.route.host | quote }}
+  {{- end }}
+  to:
+    kind: Service
+    name: {{ include "label-studio.fullname" . }}
+  port:
+    targetPort: http
+  {{- if .Values.route.tls.enabled }}
+  tls:
+    termination: {{ .Values.route.tls.termination }}
+    insecureEdgeTerminationPolicy: {{ .Values.route.tls.insecureEdgeTerminationPolicy }}
+  {{- end }}
+{{- end }}

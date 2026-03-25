@@ -91,6 +91,7 @@ This starts:
 2. **data-loader** - Uploads model/video to MinIO (runs once)
 3. **backend** - Flask API with `MINIO_ENABLED=true` (port 8888)
 4. **frontend** - React app (port 3000)
+5. **Label Studio** - Annotation UI backed by the same PostgreSQL + MinIO stack (port 8082)
 
 ### Run Without Rebuild
 
@@ -109,6 +110,7 @@ make local-down
 - Frontend: http://localhost:3000
 - Backend API: http://localhost:8888/api/
 - MinIO Console: http://localhost:9001 (login: `minioadmin` / `minioadmin`)
+- Label Studio: http://localhost:8082
 
 ## Local Development (No Containers)
 
@@ -165,6 +167,12 @@ make build-push-data
 make deploy NAMESPACE=<your-namespace>
 ```
 
+To deploy with Label Studio enabled:
+
+```bash
+make deploy-labelstudio NAMESPACE=<your-namespace>
+```
+
 ### Undeploy
 
 ```bash
@@ -193,6 +201,7 @@ helm upgrade ppe-compliance-monitor deploy/helm/ppe-compliance-monitor \
 OpenShift-specific options are included in the chart:
 - Frontend Route: `openshift.route.enabled` and optional `openshift.route.host`
 - Backend Route: `openshift.backendRoute.enabled` and optional `openshift.backendRoute.host`
+- Label Studio Route: `labelStudio.enabled`, `labelStudio.route.enabled`, `labelStudio.route.host`
 - Shared Route host (same host for frontend + backend): `openshift.sharedHost`
 - NetworkPolicy: `openshift.networkPolicy.enabled`
 - SCC/RoleBinding: `openshift.scc.enabled`, `openshift.scc.name`, `openshift.roleBinding.*`

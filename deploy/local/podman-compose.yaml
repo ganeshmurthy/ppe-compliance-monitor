@@ -63,6 +63,29 @@ services:
     networks:
       - ppe
 
+  # Label Studio annotation UI (uses the same PostgreSQL and MinIO services)
+  labelstudio:
+    image: heartexlabs/label-studio:latest
+    container_name: labelstudio
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      DJANGO_DB: default
+      POSTGRE_HOST: postgresql
+      POSTGRE_PORT: "5432"
+      POSTGRE_NAME: ppe_tracking
+      POSTGRE_USER: ppe_user
+      POSTGRE_PASSWORD: ppe_password
+    ports:
+      - "8082:8080"
+    volumes:
+      - labelstudio_data:/label-studio/data
+    networks:
+      - ppe
+
   # RTSP server for video streaming (MP4 simulation or real camera proxy)
   video-stream:
     image: docker.io/bluenviron/mediamtx:latest
@@ -264,4 +287,5 @@ services:
 volumes:
   minio_data:
   postgres_data:
+  labelstudio_data:
   model_repo:

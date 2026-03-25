@@ -51,3 +51,4 @@ app/data/uploads/
 
 # Config uploads and thumbnails (local dev)
 data/config/
+deploy/helm/ppe-compliance-monitor/charts/label-studio-0.1.0.tgz
