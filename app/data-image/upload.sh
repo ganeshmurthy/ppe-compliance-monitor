@@ -44,6 +44,10 @@ elif [ "$RUNTIME_TYPE" = "kserve" ]; then
 	else
 		echo "ONNX model already exists, skipping"
 	fi
+	# Always upload Triton config (enables TensorRT acceleration)
+	echo "Uploading Triton model config..."
+	mc cp /upload/models/ppe-onnx/ppe/config.pbtxt myminio/models/ppe-onnx/ppe/config.pbtxt
+	echo "Triton config uploaded"
 else
 	echo "ERROR: Unknown RUNTIME_TYPE '${RUNTIME_TYPE}'. Expected 'openvino' or 'kserve'."
 	exit 1

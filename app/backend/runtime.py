@@ -5,7 +5,7 @@ import os
 import time
 from ovmsclient import make_grpc_client
 
-import requests as http_requests
+import tritonclient.grpc as triton_grpc
 
 from logger import get_logger
 from response import Detection, postprocess_image
@@ -36,14 +36,26 @@ class Runtime:
         self.input_name = os.getenv("MODEL_INPUT_NAME")
         self.model_name = os.getenv("MODEL_NAME")
         self.model_version = int(os.getenv("MODEL_VERSION"))
+        self._model_version_str = str(self.model_version)
 
         runtime_type = os.getenv("RUNTIME_TYPE", "openvino").lower()
         openshift_mode = os.getenv("OPENSHIFT", "false").lower() == "true"
 
         if runtime_type == "kserve":
-            self._session = http_requests.Session()
-            self._infer_url = f"{self.service_url}/v2/models/{self.model_name}/infer"
-            self.inference_fun = self.kserve_inference
+            grpc_url = self.service_url.replace("https://", "").replace("http://", "")
+            self._triton_client = triton_grpc.InferenceServerClient(
+                url=grpc_url,
+                channel_args=[
+                    ("grpc.max_send_message_length", -1),
+                    ("grpc.max_receive_message_length", -1),
+                    ("grpc.optimization_target", "throughput"),
+                ],
+            )
+            self._infer_input = triton_grpc.InferInput(
+                self.input_name, [1, 3, 640, 640], "FP32"
+            )
+            self._infer_output = triton_grpc.InferRequestedOutput("output0")
+            self.inference_fun = self.kserve_inference_grpc
         elif openshift_mode:
             grpc_url = self.service_url.replace("https://", "").replace("http://", "")
             self._grpc_client = make_grpc_client(grpc_url)
@@ -145,6 +157,21 @@ class Runtime:
         return np.frombuffer(binary_buf[:byte_size], dtype=dtype).reshape(
             output["shape"]
         )
+
+    def kserve_inference_grpc(self, image: np.ndarray) -> np.ndarray:
+        """
+        Inference via KServe V2/Open Inference Protocol over gRPC using the
+        Triton client.  Avoids HTTP serialization overhead entirely.
+        """
+        fp32_image = image if image.dtype == np.float32 else image.astype(np.float32)
+        self._infer_input.set_data_from_numpy(fp32_image)
+        result = self._triton_client.infer(
+            model_name=self.model_name,
+            model_version=self._model_version_str,
+            inputs=[self._infer_input],
+            outputs=[self._infer_output],
+        )
+        return result.as_numpy("output0")
 
     def run(self, image: np.ndarray) -> list[Detection]:
         """

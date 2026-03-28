@@ -395,7 +395,6 @@ def _build_triton_args(cfg):
         f"--grpc-port={cfg['grpc_port']}",
         "--allow-http=true",
         "--allow-grpc=true",
-        "--strict-model-config=false",
     ]
 
 

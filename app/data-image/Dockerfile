@@ -29,7 +29,7 @@ RUN pip install git+https://github.com/openai/CLIP.git && \
     mkdir -p /exported/ppe/1 && \
     cp /tmp/ppe_openvino_model/*.xml /exported/ppe/1/ppe.xml && \
     cp /tmp/ppe_openvino_model/*.bin /exported/ppe/1/ppe.bin && \
-    yolo export model=/tmp/ppe.pt format=onnx task=detect && \
+    yolo export model=/tmp/ppe.pt format=onnx task=detect half=True && \
     mkdir -p /exported/ppe-onnx/ppe/1 && \
     cp /tmp/ppe.onnx /exported/ppe-onnx/ppe/1/model.onnx
 
@@ -46,8 +46,9 @@ COPY --from=extractor /extract/models/ppe.pt /upload/models/
 # Copy exported OpenVINO model
 COPY --from=exporter /exported/ppe/1/ /upload/models/ppe/1/
 
-# Copy exported ONNX model
+# Copy exported ONNX model and TensorRT-enabled Triton config
 COPY --from=exporter /exported/ppe-onnx/ /upload/models/ppe-onnx/
+COPY data-image/config/config.pbtxt /upload/models/ppe-onnx/ppe/config.pbtxt
 
 # Copy upload script
 COPY data-image/upload.sh /upload/upload.sh
