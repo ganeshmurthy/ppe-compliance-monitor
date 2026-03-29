@@ -2,7 +2,7 @@
 PostgreSQL database module for PPE compliance tracking.
 
 Schema:
-- app_config: User-defined configs (model URL, video_source) - classes come from detection_classes
+- app_config: User-defined configs (model_url, model_name for OVMS, video_source) — classes come from detection_classes
 - detection_classes: Class definitions (model_class_index, name, trackable) per config - FK to app_config
 - detection_tracks: Generic tracks for detected objects
 - detection_observations: Per-track observations with flexible JSONB attributes
@@ -97,6 +97,10 @@ def _init_schema():
                 video_source VARCHAR(1024) NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
+        """)
+        cursor.execute("""
+            ALTER TABLE app_config
+            ADD COLUMN IF NOT EXISTS model_name VARCHAR(128) NOT NULL DEFAULT 'ppe'
         """)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS detection_classes (
@@ -281,7 +285,7 @@ def get_all_configs() -> list:
     with get_connection() as conn:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute(
-            """SELECT id, model_url, video_source, created_at
+            """SELECT id, model_url, model_name, video_source, created_at
                FROM app_config ORDER BY id"""
         )
         configs = [dict(row) for row in cursor.fetchall()]
@@ -295,7 +299,7 @@ def get_config_by_id(config_id: int) -> dict | None:
     with get_connection() as conn:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute(
-            """SELECT id, model_url, video_source, created_at
+            """SELECT id, model_url, model_name, video_source, created_at
                FROM app_config WHERE id = %s""",
             (config_id,),
         )
@@ -307,28 +311,30 @@ def get_config_by_id(config_id: int) -> dict | None:
     return c
 
 
-def insert_config(model_url: str, video_source: str) -> int:
+def insert_config(model_url: str, video_source: str, model_name: str) -> int:
     """Insert a new config and return the inserted id. Classes go to detection_classes via replace_detection_classes."""
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            """INSERT INTO app_config (model_url, video_source)
-               VALUES (%s, %s) RETURNING id""",
-            (model_url, video_source),
+            """INSERT INTO app_config (model_url, video_source, model_name)
+               VALUES (%s, %s, %s) RETURNING id""",
+            (model_url, video_source, model_name),
         )
         row_id = cursor.fetchone()[0]
         conn.commit()
         return row_id
 
 
-def update_config(config_id: int, model_url: str, video_source: str) -> bool:
+def update_config(
+    config_id: int, model_url: str, video_source: str, model_name: str
+) -> bool:
     """Update an existing config. Returns True if a row was updated. Classes updated via replace_detection_classes."""
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            """UPDATE app_config SET model_url = %s, video_source = %s
+            """UPDATE app_config SET model_url = %s, video_source = %s, model_name = %s
                WHERE id = %s""",
-            (model_url, video_source, config_id),
+            (model_url, video_source, model_name, config_id),
         )
         updated = cursor.rowcount > 0
         conn.commit()
@@ -414,7 +420,8 @@ DATABASE SCHEMA:
 
 Table: app_config
 - id (SERIAL, PRIMARY KEY): Config ID
-- model_url (VARCHAR): OVMS model endpoint
+- model_url (VARCHAR): OVMS gRPC/REST host (endpoint URL)
+- model_name (VARCHAR): OVMS served model id (must match model name in OVMS config)
 - video_source (VARCHAR): Video path or RTSP URL
 - created_at (TIMESTAMP): When config was created
 - classes: Derived from detection_classes (model_class_index, name, trackable)

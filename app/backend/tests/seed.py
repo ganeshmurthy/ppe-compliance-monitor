@@ -75,7 +75,7 @@ def _get_or_create_person_class_id() -> int:
     """Ensure a config with Person class exists; return its detection_classes.id."""
     configs = get_all_configs()
     if not configs:
-        config_id = insert_config("http://test", "rtsp://test")
+        config_id = insert_config("http://test", "rtsp://test", model_name="ppe")
         replace_detection_classes(
             config_id,
             [

@@ -28,7 +28,7 @@ const PPEDescription = () => {
   return (
     <div className="ppe-description">
       <div className="description-section">
-        <h3>Latest PPE Detection</h3>
+        <h3>Latest Detection</h3>
         <p className="detection-info">{description}</p>
       </div>
       <div className="summary-section">

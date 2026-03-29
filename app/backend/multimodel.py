@@ -28,6 +28,10 @@ from runtime import Runtime
 
 log = get_logger(__name__)
 
+# config_queue message kinds (multiprocessing — must be picklable dicts)
+CONFIG_MSG_INIT_SHM = "INIT_SHM"
+CONFIG_MSG_RELOAD_CONFIG = "RELOAD_CONFIG"
+
 
 def _resolve_video_source_to_path(video_source: str) -> tuple[str, str | None]:
     """
@@ -186,137 +190,215 @@ def _inference_process_target(
     stop_event: Event,
     frame_ready_event: Event,
     inference_ready_event: Event,
+    rebuffer_ack_event: Event,
 ):
     """
-    Run in a separate process. Waits for buffer config, then runs inference loop.
-    Reads frames from shared memory when frame_ready_event is set, runs OVMS+DeepSORT,
-    puts (detections, description, summary) in results_queue.
-    Sets inference_ready_event when entering main loop so main process knows inference
-    has finished loading and is ready to receive frames.
+    Long-lived inference process: attaches shared memory, runs OVMS + DeepSORT.
+
+    Control messages on ``config_queue`` (picklable dicts):
+
+    - INIT_SHM: attach/replace shared buffer, load pipeline for ``config_id``.
+    - RELOAD_CONFIG: same buffer dimensions; rebuild Runtime + tracker for ``config_id``.
     """
     shm = None
     shm_h = shm_w = 0
+    runtime = None
+    tracker = None
+    person_class_id = None
+    # Mirrors main-process _stream_epoch for results tagging (drops stale after switch).
+    pipeline_epoch = -1
 
-    try:
-        # Wait for buffer config from main process (sent when first frame arrives)
-        log.info("Inference process: waiting for buffer config...")
-        queue_msg = config_queue.get(
-            timeout=300
-        )  # 5 min timeout if stream never connects
-        if queue_msg is None or stop_event.is_set():
-            return
-        # queue_msg: (shm_name, h, w) or (shm_name, h, w, config_id)
-        shm_name, shm_h, shm_w = queue_msg[0], queue_msg[1], queue_msg[2]
-        active_config_id = queue_msg[3] if len(queue_msg) > 3 else None
-        log.info(
-            "Inference process: received config shm=%s %dx%d config_id=%s",
-            shm_name,
-            shm_h,
-            shm_w,
-            active_config_id,
-        )
+    description_buffer: list = []
+    frame_count = 0
+    person_history: dict = {}
+    person_last_state: dict = {}
+    person_observations: list = []
+    last_seen_update_interval = 30
+    frames_since_last_seen_update = 0
+    latest_summary = ""
 
-        log.info("Inference process: attaching to SharedMemory name=%s", shm_name)
-        shm = SharedMemory(name=shm_name)
-        log.info("Inference process: SharedMemory attached")
-
-        # Load config and classes (DB already initialized by main process - do NOT call
-        # init_database() here: it DROPs tables and would wipe configs created by main)
-        try:
-            config = None
-            if active_config_id is not None:
-                try:
-                    cid = int(active_config_id)
-                    config = get_config_by_id(cid)
-                    log.info("Inference process: using config id=%s", cid)
-                except (ValueError, TypeError):
-                    pass
-            if not config:
-                configs = get_all_configs()
-                if configs:
-                    config = get_config_by_id(configs[0]["id"])
-                    log.info(
-                        "Inference process: using first config id=%s", config["id"]
-                    )
-            if not config:
-                raise ValueError(
-                    "No config available. Add a config via the Config dialog first."
-                )
-            log.info(
-                "Inference process: config loaded id=%s, fetching detection_classes",
-                config["id"],
-            )
-            classes = get_detection_classes_for_config(config["id"])
-            log.info(
-                "Inference process: got %d detection classes",
-                len(classes) if classes else 0,
-            )
-            if not classes:
-                raise ValueError(
-                    "No detection classes available. Add a config via the Config dialog first."
-                )
-            model_url = (config.get("model_url") or "").strip()
-            if not model_url:
-                raise ValueError(
-                    "Config has no inferencing URL (model_url). "
-                    "Edit the config and set the inferencing URL."
-                )
-            log.info("Inference process: creating Runtime service_url=%s", model_url)
-            runtime = Runtime(classes=classes, service_url=model_url)
-            log.info("Inference process: Runtime created")
-        except ValueError as e:
-            log.error("Inference process: config/init failed: %s", e)
-            try:
-                results_queue.put(([], str(e), ""))
-            except Exception:
-                pass
-            return
-        except Exception as e:
-            log.exception("Inference process init failed: %s", e)
-            log.info("Inference process: putting empty detections due to init error")
-            try:
-                results_queue.put(([], f"Error: {e}", ""))
-            except Exception:
-                pass
-            return
-        log.info("Inference process: importing DeepSort")
-        from deep_sort_realtime.deepsort_tracker import DeepSort
-
-        log.info("Inference process: getting Person class, creating tracker")
-        person_class = get_detection_class_by_name_and_config("Person", config["id"])
-        person_class_id = person_class["id"] if person_class else None
-
-        tracker = DeepSort(max_age=30, n_init=3)
-        log.info("Inference process: tracker created")
-
-        # Signal main process that inference is ready to receive frames. UI can show
-        # "Processing..." until first result; this helps debugging startup timing.
-        inference_ready_event.set()
-        log.info("Inference process: ready, entering main loop")
-
-        # State (lives in inference process only)
+    def reset_tracking_state() -> None:
+        nonlocal description_buffer, frame_count, person_history, person_last_state
+        nonlocal person_observations, frames_since_last_seen_update, latest_summary
         description_buffer = []
         frame_count = 0
         person_history = {}
         person_last_state = {}
         person_observations = []
-        last_seen_update_interval = 30
         frames_since_last_seen_update = 0
         latest_summary = ""
 
+    def build_pipeline(active_config_id) -> None:
+        """Load DB config, create Runtime + DeepSORT. Raises ValueError on bad config."""
+        nonlocal runtime, tracker, person_class_id
+        from deep_sort_realtime.deepsort_tracker import DeepSort
+
+        config = None
+        if active_config_id is not None:
+            try:
+                cid = int(active_config_id)
+                config = get_config_by_id(cid)
+                log.info("Inference process: using config id=%s", cid)
+            except (ValueError, TypeError):
+                pass
+        if not config:
+            configs = get_all_configs()
+            if configs:
+                config = get_config_by_id(configs[0]["id"])
+                log.info("Inference process: using first config id=%s", config["id"])
+        if not config:
+            raise ValueError(
+                "No config available. Add a config via the Config dialog first."
+            )
+        classes = get_detection_classes_for_config(config["id"])
+        if not classes:
+            raise ValueError(
+                "No detection classes available. Add a config via the Config dialog first."
+            )
+        model_url = (config.get("model_url") or "").strip()
+        if not model_url:
+            raise ValueError(
+                "Config has no inferencing URL (model_url). "
+                "Edit the config and set the inferencing URL."
+            )
+        model_name = (config.get("model_name") or "").strip() or "ppe"
+        log.info(
+            "Inference process: creating Runtime config_id=%s service_url=%s model_name=%s",
+            config["id"],
+            model_url,
+            model_name,
+        )
+        runtime = Runtime(classes=classes, service_url=model_url, model_name=model_name)
+        person_class = get_detection_class_by_name_and_config("Person", config["id"])
+        person_class_id = person_class["id"] if person_class else None
+        tracker = DeepSort(max_age=30, n_init=3)
+
+    def handle_init_shm(msg: dict) -> None:
+        nonlocal shm, shm_h, shm_w, runtime, tracker, pipeline_epoch
+        shm_name = msg["shm_name"]
+        nh, nw = int(msg["h"]), int(msg["w"])
+        cid = msg.get("config_id")
+        try:
+            pipeline_epoch = int(msg["epoch"])
+        except (TypeError, KeyError, ValueError):
+            pipeline_epoch = -1
+        try:
+            if shm is not None:
+                try:
+                    shm.close()
+                except Exception:
+                    pass
+                shm = None
+            log.info(
+                "Inference: INIT_SHM attach name=%s size=%dx%d config_id=%s",
+                shm_name,
+                nh,
+                nw,
+                cid,
+            )
+            shm = SharedMemory(name=shm_name)
+            shm_h, shm_w = nh, nw
+            inference_ready_event.clear()
+            runtime = None
+            tracker = None
+            try:
+                build_pipeline(cid)
+                reset_tracking_state()
+            except ValueError as e:
+                log.error("Inference process: config/init failed: %s", e)
+                try:
+                    results_queue.put(([], str(e), "", pipeline_epoch), timeout=2.0)
+                except Exception:
+                    pass
+            except Exception as e:
+                log.exception("Inference process init failed: %s", e)
+                try:
+                    results_queue.put(
+                        ([], f"Error: {e}", "", pipeline_epoch), timeout=2.0
+                    )
+                except Exception:
+                    pass
+            else:
+                inference_ready_event.set()
+                log.info("Inference process: ready after INIT_SHM")
+        finally:
+            rebuffer_ack_event.set()
+
+    def handle_reload_config(msg: dict) -> None:
+        nonlocal runtime, tracker, pipeline_epoch
+        cid = msg.get("config_id")
+        try:
+            pipeline_epoch = int(msg["epoch"])
+        except (TypeError, KeyError, ValueError):
+            pipeline_epoch = -1
+        log.info("Inference: RELOAD_CONFIG config_id=%s", cid)
+        inference_ready_event.clear()
+        runtime = None
+        tracker = None
+        try:
+            build_pipeline(cid)
+            reset_tracking_state()
+        except ValueError as e:
+            log.error("Inference process: RELOAD_CONFIG failed: %s", e)
+            try:
+                results_queue.put(([], str(e), "", pipeline_epoch), timeout=2.0)
+            except Exception:
+                pass
+        except Exception as e:
+            log.exception("Inference process: RELOAD_CONFIG failed: %s", e)
+            try:
+                results_queue.put(([], f"Error: {e}", "", pipeline_epoch), timeout=2.0)
+            except Exception:
+                pass
+        else:
+            inference_ready_event.set()
+            log.info("Inference process: ready after RELOAD_CONFIG")
+
+    def process_control_message(msg: dict) -> None:
+        kind = msg.get("kind")
+        if kind == CONFIG_MSG_INIT_SHM:
+            handle_init_shm(msg)
+        elif kind == CONFIG_MSG_RELOAD_CONFIG:
+            handle_reload_config(msg)
+        else:
+            log.warning("Inference: unknown config_queue message kind=%s", kind)
+
+    try:
+        log.info("Inference process: waiting for first INIT_SHM...")
+        first = None
+        while True:
+            first = config_queue.get(timeout=300)
+            if stop_event.is_set() or first is None:
+                return
+            if isinstance(first, dict) and first.get("kind") == CONFIG_MSG_INIT_SHM:
+                break
+            log.warning("Inference: expected INIT_SHM first, got %s", first)
+            return
+
+        handle_init_shm(first)
+
+        stale_ready_loops = 0
         while not stop_event.is_set():
-            # Wait for frame (with timeout to check stop_event periodically)
-            if not frame_ready_event.wait(timeout=0.5):
+            try:
+                while True:
+                    msg = config_queue.get_nowait()
+                    process_control_message(msg)
+            except queue.Empty:
+                pass
+
+            if shm is None or runtime is None or tracker is None:
+                stale_ready_loops += 1
+                time.sleep(0.02)
+                continue
+            stale_ready_loops = 0
+
+            if not frame_ready_event.wait(timeout=0.15):
                 continue
 
-            # Copy frame from shared memory
             buf = np.ndarray((shm_h, shm_w, 3), dtype=np.uint8, buffer=shm.buf)
             frame = buf.copy()
-
-            # Signal "empty" so main can put next frame
             frame_ready_event.clear()
 
-            # Run inference
             runtime_detections = runtime.run(frame)
             detections, counts, person_detections_for_tracker = process_detections(
                 runtime_detections
@@ -324,13 +406,13 @@ def _inference_process_target(
 
             tracked_person_boxes = {}
             if person_detections_for_tracker:
+                tracks = []
                 try:
                     tracks = tracker.update_tracks(
                         person_detections_for_tracker, frame=frame
                     )
                 except IndexError as e:
                     log.error("Inference: tracker IndexError: %s", e, exc_info=True)
-                    continue
                 for track in tracks:
                     if not track.is_confirmed():
                         continue
@@ -416,7 +498,6 @@ def _inference_process_target(
             if frame_count % 50 == 0:
                 latest_summary = generate_summary(description_buffer)
 
-            # Ensure native Python types for reliable pickling across processes
             detections_clean = []
             for d in detections:
                 x1, y1, x2, y2 = d["bbox"]
@@ -430,10 +511,14 @@ def _inference_process_target(
                     item["track_id"] = int(d["track_id"])
                 detections_clean.append(item)
 
-            # Put results for main process (block briefly to avoid dropping)
             try:
                 results_queue.put(
-                    (detections_clean, description, latest_summary or ""),
+                    (
+                        detections_clean,
+                        description,
+                        latest_summary or "",
+                        pipeline_epoch,
+                    ),
                     timeout=2.0,
                 )
             except queue.Full:
@@ -441,9 +526,10 @@ def _inference_process_target(
 
     except Exception as e:
         log.exception("Inference process: crashed: %s", e)
-        log.info("Inference process: putting empty detections due to crash")
         try:
-            results_queue.put(([], f"Inference error: {e}", ""), timeout=2.0)
+            results_queue.put(
+                ([], f"Inference error: {e}", "", pipeline_epoch), timeout=2.0
+            )
         except Exception:
             pass
     finally:
@@ -484,12 +570,17 @@ class MultiModalAIDemo:
         self.latest_summary = ""
         self.latest_tracked_persons = []
 
-        # Frame reader thread
+        # Frame reader thread: generation bumps on every stop so a session that is
+        # still blocked in cap.read() cannot "come back to life" after we clear a
+        # shared stop Event and start a new reader (fixes duplicate/zombie readers).
         self._reader_thread = None
-        self._reader_stop = threading.Event()
+        self._frame_reader_generation = 0
         self._latest_frame = None
         self._latest_frame_id = None
+        # Epoch of frames in _latest_frame (see _stream_epoch); inference SHM skips mismatches.
+        self._latest_frame_epoch = -1
         self._latest_frame_lock = threading.Lock()
+        self._stream_epoch = 0
         self._reconnect_needed = False
         self._last_reconnect_warn_time = 0.0
 
@@ -527,6 +618,8 @@ class MultiModalAIDemo:
         self._frame_ready_event = Event()
         # Set by inference process when it enters main loop; main can check for startup timing
         self._inference_ready_event = Event()
+        # Child sets this after handling INIT_SHM so main can unlink the previous segment safely.
+        self._rebuffer_ack_event = Event()
 
         # Start results consumer thread
         self._results_consumer_thread = threading.Thread(
@@ -540,34 +633,29 @@ class MultiModalAIDemo:
         atexit.register(self._shutdown)
 
     def start_streaming(self, video_source: str, config_id: int | None = None):
-        """Start or switch video source. Sets ACTIVE_CONFIG_ID for inference, opens stream, spawns inference process."""
-        # Clear current frame immediately so video feed stops serving old content
+        """Start or switch video source. Keeps the inference process alive when possible."""
         with self._latest_frame_lock:
             self._latest_frame = None
             self._latest_frame_id = None
-        # Stop frame reader first so we stop producing old frames
+            self._latest_frame_epoch = -1
         self._stop_frame_reader()
-        self._stop_inference_process(
-            quick=True
-        )  # Don't wait - terminate fast for instant switch
-        # Drain config queue to avoid stale shm config from previous run
-        while True:
-            try:
-                self._config_queue.get_nowait()
-            except Exception:
-                break
-        # Drain results queue to avoid stale detections from terminated inference process.
-        # Otherwise old results could overwrite _display_detections with wrong-frame bboxes.
-        while True:
-            try:
-                self._results_queue.get_nowait()
-            except Exception:
-                break
+
+        # Reset stop_event so a newly spawned child does not exit on the first queued
+        # INIT_SHM (stop can remain set after a prior _stop_inference_process).
+        if self._stop_event is not None:
+            self._stop_event.clear()
+
+        # New switch generation: drop stale inference results and skip SHM for old frames.
+        self._stream_epoch += 1
+        _epoch = self._stream_epoch
+
+        warm = (
+            self._inference_process is not None and self._inference_process.is_alive()
+        )
+
         if self.cap is not None:
             self.cap.release()
             self.cap = None
-
-        # Clean up previous S3 temp file if any
         if self._s3_temp_path:
             try:
                 os.unlink(self._s3_temp_path)
@@ -577,36 +665,14 @@ class MultiModalAIDemo:
 
         self.video_source = video_source
         self._reconnect_needed = False
-        self._shm_initialized = False
-        # Reset frame_ready_event so main process will put first frame. If left set from
-        # prior run (main had put, inference was killed before reading), we'd never put
-        # and inference would never receive frames.
-        self._frame_ready_event.clear()
-        # Clear inference_ready; new process will set it when loaded
-        self._inference_ready_event.clear()
-        if self._shm is not None:
-            try:
-                self._shm.close()
-                self._shm.unlink()
-            except Exception:
-                pass
-            self._shm = None
 
-        self._active_config_id = config_id
-        log.info(
-            "start_streaming: video_source=%s config_id=%s",
-            video_source,
-            config_id,
-        )
-
-        # Resolve S3 paths to local temp file (cv2.VideoCapture needs local path)
         path_to_open, self._s3_temp_path = _resolve_video_source_to_path(video_source)
 
-        # Clear stale error so UI shows "Processing..." while new inference starts
         with self._display_lock:
             self._display_description = "Processing video..."
             self._display_detections = []
             self._results_received_count = 0
+            self._active_config_id = config_id
 
         self.cap = cv2.VideoCapture(path_to_open)
         if not self.cap.isOpened():
@@ -626,20 +692,146 @@ class MultiModalAIDemo:
                     log.info("Still waiting for video stream (attempt %d)...", attempt)
         log.info("Video streaming from: %s", video_source)
 
-        self._stop_event.clear()
-        self._inference_process = Process(
-            target=_inference_process_target,
-            args=(
-                self._config_queue,
-                self._results_queue,
-                self._stop_event,
-                self._frame_ready_event,
-                self._inference_ready_event,
-            ),
-            daemon=True,
-        )
-        self._inference_process.start()
-        log.info("Inference process spawned (waiting for first frame)")
+        ok, probe = self.cap.read()
+        h, w = 0, 0
+        if ok and probe is not None:
+            h, w = int(probe.shape[0]), int(probe.shape[1])
+            with self._latest_frame_lock:
+                self._latest_frame = probe.copy()
+                self._latest_frame_id = 1
+                self._latest_frame_epoch = self._stream_epoch
+
+        rebuf_failed = False
+        if warm:
+            while True:
+                try:
+                    self._results_queue.get_nowait()
+                except queue.Empty:
+                    break
+            while True:
+                try:
+                    self._config_queue.get_nowait()
+                except queue.Empty:
+                    break
+            self._inference_ready_event.clear()
+            self._frame_ready_event.clear()
+
+            same_geo = (
+                self._shm_initialized
+                and h > 0
+                and h == self._shm_h
+                and w == self._shm_w
+            )
+            if same_geo:
+                try:
+                    self._config_queue.put(
+                        {
+                            "kind": CONFIG_MSG_RELOAD_CONFIG,
+                            "config_id": config_id,
+                            "epoch": _epoch,
+                        },
+                        timeout=60.0,
+                    )
+                except Exception as e:
+                    log.exception("RELOAD_CONFIG put failed: %s", e)
+                    rebuf_failed = True
+            elif h <= 0 or w <= 0:
+                log.warning("Warm switch: invalid frame size from probe; cold restart")
+                rebuf_failed = True
+            else:
+                self._rebuffer_ack_event.clear()
+                new_shm = None
+                try:
+                    new_shm = SharedMemory(create=True, size=h * w * 3)
+                    self._config_queue.put(
+                        {
+                            "kind": CONFIG_MSG_INIT_SHM,
+                            "shm_name": new_shm.name,
+                            "h": h,
+                            "w": w,
+                            "config_id": config_id,
+                            "epoch": _epoch,
+                        },
+                        timeout=60.0,
+                    )
+                except Exception as e:
+                    log.exception("INIT_SHM (rebuffer) failed: %s", e)
+                    rebuf_failed = True
+                    if new_shm is not None:
+                        try:
+                            new_shm.close()
+                            new_shm.unlink()
+                        except Exception:
+                            pass
+                        new_shm = None
+                if not rebuf_failed and new_shm is not None:
+                    if not self._rebuffer_ack_event.wait(timeout=5.0):
+                        log.error(
+                            "Timeout waiting for inference rebuffer ack; restarting inference"
+                        )
+                        self._stop_inference_process(quick=True)
+                        rebuf_failed = True
+                        try:
+                            new_shm.close()
+                            new_shm.unlink()
+                        except Exception:
+                            pass
+                    else:
+                        if self._shm is not None:
+                            try:
+                                self._shm.close()
+                                self._shm.unlink()
+                            except Exception:
+                                pass
+                        self._shm = new_shm
+                        self._shm_h, self._shm_w = h, w
+                        self._shm_initialized = True
+
+            if rebuf_failed:
+                warm = False
+                log.warning(
+                    "start_streaming: warm reconfigure failed, will cold-restart inference"
+                )
+
+        if not warm:
+            self._stop_inference_process(quick=True)
+            while True:
+                try:
+                    self._config_queue.get_nowait()
+                except queue.Empty:
+                    break
+            while True:
+                try:
+                    self._results_queue.get_nowait()
+                except queue.Empty:
+                    break
+            self._shm_initialized = False
+            self._frame_ready_event.clear()
+            self._inference_ready_event.clear()
+            if self._shm is not None:
+                try:
+                    self._shm.close()
+                    self._shm.unlink()
+                except Exception:
+                    pass
+                self._shm = None
+
+            self._stop_event.clear()
+            self._inference_process = Process(
+                target=_inference_process_target,
+                args=(
+                    self._config_queue,
+                    self._results_queue,
+                    self._stop_event,
+                    self._frame_ready_event,
+                    self._inference_ready_event,
+                    self._rebuffer_ack_event,
+                ),
+                daemon=True,
+            )
+            self._inference_process.start()
+            log.info("Inference process spawned (waiting for first INIT_SHM)")
+
         self._start_frame_reader()
         self._streaming_started = True
 
@@ -688,7 +880,13 @@ class MultiModalAIDemo:
                     result = self._results_queue.get(timeout=0.5)
                     if result is None:
                         break
-                    detections, description, summary = result
+                    if len(result) == 4:
+                        detections, description, summary, res_epoch = result
+                    else:
+                        detections, description, summary = result
+                        res_epoch = None
+                    if res_epoch is not None and res_epoch != self._stream_epoch:
+                        continue
                     with self._display_lock:
                         self._display_detections = list(detections)
                         self._display_description = description
@@ -734,20 +932,18 @@ class MultiModalAIDemo:
         """Return the most recent tracked persons with their PPE status."""
         return self.latest_tracked_persons
 
-    def _frame_reader_loop(self):
+    def _frame_reader_loop(self, session: int):
         """Continuously read frames to consume stream; keeps only latest."""
         try:
-            self._frame_reader_loop_impl()
+            self._frame_reader_loop_impl(session)
         except Exception as e:
             log.exception("Frame reader: thread crashed: %s", e)
-        finally:
-            log.info("Frame reader: thread exiting")
 
     def _is_file_source(self):
         s = (self.video_source or "").strip()
         return s.startswith("s3://")
 
-    def _frame_reader_loop_impl(self):
+    def _frame_reader_loop_impl(self, session: int):
         fail_count = 0
         read_count = 0
         frame_interval = 0.0  # 0 = no throttle (live stream)
@@ -760,9 +956,17 @@ class MultiModalAIDemo:
                     fps,
                     frame_interval,
                 )
-        while not self._reader_stop.is_set():
+        while self._frame_reader_generation == session:
             cap = self.cap
             if cap is None or not cap.isOpened():
+                if not hasattr(self, "_last_reader_cap_warn") or (
+                    time.time() - self._last_reader_cap_warn >= 3.0
+                ):
+                    log.warning(
+                        "Frame reader: waiting for VideoCapture (session=%s)",
+                        session,
+                    )
+                    self._last_reader_cap_warn = time.time()
                 time.sleep(0.05)
                 continue
             t0 = time.perf_counter() if frame_interval > 0 else 0
@@ -783,12 +987,13 @@ class MultiModalAIDemo:
                 with self._latest_frame_lock:
                     self._latest_frame = frame.copy()
                     self._latest_frame_id = read_count
+                    self._latest_frame_epoch = self._stream_epoch
                 if frame_interval > 0:
                     elapsed = time.perf_counter() - t0
                     sleep_time = frame_interval - elapsed
                     if sleep_time > 0:
                         time.sleep(sleep_time)
-            elif self._reader_stop.is_set():
+            elif self._frame_reader_generation != session:
                 break
             else:
                 # cap.read() returned False - end of file or stream issue
@@ -814,21 +1019,33 @@ class MultiModalAIDemo:
 
     def _start_frame_reader(self):
         """Start background thread that consumes stream as fast as possible."""
-        self._reader_stop.clear()
+        self._frame_reader_generation += 1
+        session = self._frame_reader_generation
         self._reader_thread = threading.Thread(
-            target=self._frame_reader_loop, daemon=True
+            target=self._frame_reader_loop,
+            args=(session,),
+            daemon=True,
         )
         self._reader_thread.start()
 
     def _stop_frame_reader(self):
         """Stop frame reader thread before reconnect/release."""
-        self._reader_stop.set()
+        self._frame_reader_generation += 1
+        prev_thread_still_alive = False
         if self._reader_thread is not None:
-            self._reader_thread.join(timeout=2.0)
+            t = self._reader_thread
             self._reader_thread = None
+            t.join(timeout=15.0)
+            prev_thread_still_alive = t.is_alive()
+            if prev_thread_still_alive:
+                log.error(
+                    "Frame reader: previous thread still alive after 15s join "
+                    "(may be stuck in cap.read); new session already active"
+                )
         with self._latest_frame_lock:
             self._latest_frame = None
             self._latest_frame_id = None
+            self._latest_frame_epoch = -1
 
     def _reconnect_stream(self):
         """Reconnect to live stream with retry and backoff."""
@@ -860,30 +1077,36 @@ class MultiModalAIDemo:
         When shared memory queue is empty: put frame in buffer for inference.
         When shared memory queue is not empty: do not overwrite; just return frame for display.
 
-        Returns (frame, detections, frame_id). Frame may be None if unavailable.
+        Returns (frame, detections, frame_id, frame_epoch). Frame may be None if unavailable.
+        ``frame_epoch`` is the buffer epoch for this frame (for MJPEG dedup vs ``_stream_epoch``).
         """
         frame = None
         frame_id = None
         if self._reconnect_needed:
             now = time.time()
             if now - self._last_reconnect_warn_time >= 5.0:
-                log.warning("get_frame_for_display: returning None (_reconnect_needed)")
+                log.warning(
+                    "get_frame_for_display: reconnect in progress (no frame yet)"
+                )
                 self._last_reconnect_warn_time = now
-            return None, [], None
+            return None, [], None, -1
 
         with self._latest_frame_lock:
             if self._latest_frame is not None:
                 frame = self._latest_frame.copy()
                 frame_id = self._latest_frame_id
+                frame_epoch = self._latest_frame_epoch
+            else:
+                frame_epoch = -1
 
         if frame is None:
-            return None, [], None
+            return None, [], None, -1
 
         # Shared memory producer: only put when inference has consumed previous frame.
         # frame_ready_event: set=inference has frame, clear=slot empty. We put when clear.
         # (start_streaming clears it on restart so we always put first frame after switch.)
         frame_ready = self._frame_ready_event.is_set()
-        if not frame_ready:
+        if not frame_ready and frame_epoch == self._stream_epoch:
             h, w = frame.shape[:2]
             size = h * w * 3
 
@@ -893,21 +1116,34 @@ class MultiModalAIDemo:
                     self._shm = SharedMemory(create=True, size=size)
                     self._shm_h, self._shm_w = h, w
                     self._config_queue.put(
-                        (self._shm.name, h, w, self._active_config_id)
+                        {
+                            "kind": CONFIG_MSG_INIT_SHM,
+                            "shm_name": self._shm.name,
+                            "h": h,
+                            "w": w,
+                            "config_id": self._active_config_id,
+                            "epoch": self._stream_epoch,
+                        }
                     )
                     self._shm_initialized = True
-                    log.info(
-                        "Shared buffer created %dx%d, config sent to inference", h, w
-                    )
+                    log.info("Shared memory buffer created %dx%d for inference", h, w)
                 except Exception as e:
                     log.exception("Failed to create shared memory: %s", e)
-                    return frame, list(self._display_detections), frame_id
+                    return frame, list(self._display_detections), frame_id, frame_epoch
 
             # Only write if dimensions match (resolution unchanged)
             if h == self._shm_h and w == self._shm_w:
                 buf = np.ndarray((h, w, 3), dtype=np.uint8, buffer=self._shm.buf)
                 buf[:] = frame
                 self._frame_ready_event.set()
+            else:
+                log.warning(
+                    "get_frame_for_display: frame %dx%d != shm %dx%d — not writing SHM",
+                    h,
+                    w,
+                    self._shm_h,
+                    self._shm_w,
+                )
 
         with self._display_lock:
             detections = list(self._display_detections)
@@ -934,7 +1170,7 @@ class MultiModalAIDemo:
                 )
             detections = scaled
 
-        return frame, detections, frame_id
+        return frame, detections, frame_id, frame_epoch
 
     def capture_and_update(self, resize_to=None, caller=None):
         """Legacy: not used when inference is in separate process."""

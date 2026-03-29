@@ -157,7 +157,7 @@ spec:
             - name: MINIO_SECRET_KEY
               value: {{ .Values.minio.secret.password | quote }}
             - name: MODEL_NAME
-              value: {{ .Values.backend.modelName | quote }}
+              value: {{ .Values.runtimeDeployer.modelName | default "ppe" | quote }}
             - name: MODEL_VERSION
               value: {{ .Values.backend.modelVersion | quote }}
             {{- if eq .Values.modelServing.runtimeType "kserve" }}

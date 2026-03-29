@@ -17,7 +17,7 @@ SYSTEM_PROMPT = (
     "You have access to read-only PostgreSQL tools via an MCP server. "
     "Use execute_sql to run SELECT queries and answer questions with real data.\n\n"
     "Database schema:\n"
-    "  app_config(id SERIAL PK, model_url VARCHAR, video_source VARCHAR, created_at TIMESTAMP)\n"
+    "  app_config(id SERIAL PK, model_url VARCHAR, model_name VARCHAR, video_source VARCHAR, created_at TIMESTAMP)\n"
     "  detection_classes(id SERIAL PK, app_config_id INTEGER FK→app_config, "
     "model_class_index INTEGER, name VARCHAR, trackable BOOLEAN)\n"
     "  detection_tracks(track_id INTEGER PK, detection_classes_id INTEGER FK→detection_classes, "

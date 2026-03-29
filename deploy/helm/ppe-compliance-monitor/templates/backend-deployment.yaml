@@ -76,8 +76,6 @@ spec:
               {{- else }}
               value: {{ .Values.backend.modelInputName | quote }}
               {{- end }}
-            - name: MODEL_NAME
-              value: {{ .Values.backend.modelName | quote }}
             - name: MODEL_VERSION
               value: {{ .Values.backend.modelVersion | quote }}
             - name: OPENSHIFT

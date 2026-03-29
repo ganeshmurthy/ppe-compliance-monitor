@@ -11,7 +11,6 @@ backend:
     pullPolicy: Always
   serviceUrl: "http://ppe-predictor.svc.cluster.local:8888"
   modelInputName: "x"
-  modelName: "ppe"
   modelVersion: "1"
   logLevel: "INFO"
 
@@ -159,6 +158,8 @@ data:
 
 runtimeDeployer:
   enabled: true
+  # Default OVMS model id for cluster bootstrap (backend uses app_config.model_name per config).
+  modelName: "ppe"
   image:
     repository: quay.io/rh-ai-quickstart/ppe-compliance-monitor-runtime
     tag: latest

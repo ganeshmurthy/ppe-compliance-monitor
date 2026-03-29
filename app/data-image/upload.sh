@@ -3,10 +3,8 @@ set -e
 
 echo "=== PPE Compliance Monitor Data Uploader ==="
 
-# Set mc config directory to writable location (for OpenShift compatibility)
 export MC_CONFIG_DIR=/tmp/.mc
 
-# Wait for MinIO to be ready
 echo "Waiting for MinIO to be ready..."
 until mc alias set myminio "${MINIO_ENDPOINT}" "${MINIO_ACCESS_KEY}" "${MINIO_SECRET_KEY}" 2>/dev/null; do
 	echo "MinIO not ready, retrying in 2 seconds..."
@@ -14,7 +12,6 @@ until mc alias set myminio "${MINIO_ENDPOINT}" "${MINIO_ACCESS_KEY}" "${MINIO_SE
 done
 echo "MinIO connection established"
 
-# Create buckets (ignore if already exists)
 echo "Creating buckets..."
 mc mb --ignore-existing myminio/models
 mc mb --ignore-existing myminio/data
@@ -25,35 +22,61 @@ RUNTIME_TYPE="${RUNTIME_TYPE}"
 echo "Runtime type: ${RUNTIME_TYPE}"
 
 if [ "$RUNTIME_TYPE" = "openvino" ]; then
-	# Upload OpenVINO model (only if not exists)
-	echo "Checking OpenVINO model files..."
-	if ! mc stat myminio/models/ppe/1/ppe.xml >/dev/null 2>&1; then
-		echo "Uploading OpenVINO model (ppe/1/)..."
-		mc cp --recursive /upload/models/ppe/ myminio/models/ppe/
-		echo "OpenVINO model uploaded successfully"
-	else
-		echo "OpenVINO model already exists, skipping"
-	fi
+	echo "Checking / uploading OpenVINO model trees..."
+	for d in /upload/models/*/; do
+		[ -d "$d" ] || continue
+		base=$(basename "$d")
+		case "$base" in *-onnx) continue ;; esac
+		if [ ! -f "${d}1/${base}.xml" ]; then
+			continue
+		fi
+		if ! mc stat "myminio/models/${base}/1/${base}.xml" >/dev/null 2>&1; then
+			echo "Uploading OpenVINO model: ${base}/"
+			mc cp --recursive "$d" "myminio/models/${base}/"
+		else
+			echo "OpenVINO ${base} already present, skipping"
+		fi
+	done
 elif [ "$RUNTIME_TYPE" = "kserve" ]; then
-	# Upload ONNX model in Triton directory layout (only if not exists)
-	echo "Checking ONNX model files..."
-	if ! mc stat myminio/models/ppe-onnx/ppe/1/model.onnx >/dev/null 2>&1; then
-		echo "Uploading ONNX model (ppe-onnx/ppe/1/model.onnx)..."
-		mc cp --recursive /upload/models/ppe-onnx/ myminio/models/ppe-onnx/
-		echo "ONNX model uploaded successfully"
-	else
-		echo "ONNX model already exists, skipping"
+	echo "Checking / uploading ONNX model trees..."
+	for d in /upload/models/*-onnx/; do
+		[ -d "$d" ] || continue
+		base=$(basename "$d")
+		stem=$(echo "$base" | sed 's/-onnx$//')
+		onnx_path="${d}${stem}/1/model.onnx"
+		if [ ! -f "$onnx_path" ]; then
+			continue
+		fi
+		if ! mc stat "myminio/models/${base}/${stem}/1/model.onnx" >/dev/null 2>&1; then
+			echo "Uploading ONNX model: ${base}/"
+			mc cp --recursive "$d" "myminio/models/${base}/"
+		else
+			echo "ONNX ${base} already present, skipping"
+		fi
+	done
+	# Optional Triton config (GPU / TensorRT); repo default matches ppe-onnx layout
+	if [ -f /upload/triton-config/config.pbtxt ] &&
+		mc stat "myminio/models/ppe-onnx/ppe/1/model.onnx" >/dev/null 2>&1; then
+		echo "Uploading Triton config for ppe-onnx/ppe..."
+		mc cp /upload/triton-config/config.pbtxt "myminio/models/ppe-onnx/ppe/config.pbtxt"
 	fi
-	# Always upload Triton config (enables TensorRT acceleration)
-	echo "Uploading Triton model config..."
-	mc cp /upload/models/ppe-onnx/ppe/config.pbtxt myminio/models/ppe-onnx/ppe/config.pbtxt
-	echo "Triton config uploaded"
 else
 	echo "ERROR: Unknown RUNTIME_TYPE '${RUNTIME_TYPE}'. Expected 'openvino' or 'kserve'."
 	exit 1
 fi
 
-# Upload video (only if not exists)
+echo "Uploading raw .pt files (for reference / other runtimes)..."
+for f in /upload/models-pt/*.pt; do
+	[ -f "$f" ] || continue
+	bn=$(basename "$f")
+	if ! mc stat "myminio/models/${bn}" >/dev/null 2>&1; then
+		echo "Uploading ${bn}"
+		mc cp "$f" "myminio/models/${bn}"
+	else
+		echo "${bn} already in bucket, skipping"
+	fi
+done
+
 echo "Checking video file..."
 if ! mc stat myminio/data/combined-video-no-gap-rooftop.mp4 >/dev/null 2>&1; then
 	echo "Uploading video (combined-video-no-gap-rooftop.mp4)..."
@@ -65,7 +88,6 @@ fi
 
 echo "=== Data upload complete ==="
 
-# List uploaded files
 echo ""
 echo "Files in MinIO:"
 echo "--- models bucket ---"

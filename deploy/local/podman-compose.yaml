@@ -166,12 +166,8 @@ services:
       MINIO_MODEL_KEY: ppe.pt
       MINIO_VIDEO_BUCKET: data
       MINIO_VIDEO_KEY: combined-video-no-gap-rooftop.mp4
-      # Additional runtime.py env vars (model_url comes from config)
-      # MODEL_INPUT_NAME: "x"
-      # MODEL_NAME: "yolo"
-      # MODEL_VERSION: "1"
+      # model_name comes from app_config; tensor input/version overrides optional
       MODEL_INPUT_NAME: "x"
-      MODEL_NAME: "ppe"
       MODEL_VERSION: "1"
       # PostgreSQL database connection
       DB_HOST: postgresql
@@ -232,44 +228,31 @@ services:
     ports:
       - "3000:3000"
 
-  # ── Model export: converts YOLO .pt → ONNX for OpenVINO ──
+  # Export each app/models/*.pt → /models/<stem>/1/*.xml + config.json for OVMS
   yolo-model-prep:
-    image: ultralytics/ultralytics:latest-cpu
-    entrypoint: ["bash", "-c"]
-    command:
-      - |
-        set -e
-        MODEL_NAME=ppe
-        TARGET_DIR=/models/$$MODEL_NAME/1
-        TARGET=$$TARGET_DIR/$$MODEL_NAME.xml
-        if [ -f "$$TARGET" ]; then
-          echo "OpenVINO model already exists, skipping export."
-          exit 0
-        fi
-        echo "Installing OpenAI CLIP dependency..."
-        pip install git+https://github.com/openai/CLIP.git
-        mkdir -p "$$TARGET_DIR"
-        cp /source/$$MODEL_NAME.pt /tmp/$$MODEL_NAME.pt
-        yolo export model=/tmp/$$MODEL_NAME.pt format=openvino task=detect
-        cp /tmp/$${MODEL_NAME}_openvino_model/*.xml "$$TARGET"
-        cp /tmp/$${MODEL_NAME}_openvino_model/*.bin "$$TARGET_DIR/"
-        echo "Model exported to $$TARGET_DIR"
+    image: docker.io/ultralytics/ultralytics:latest-cpu
     volumes:
       - ../../app/models:/source:ro,z
       - model_repo:/models:z
+      - ./yolo-model-prep.sh:/prep.sh:ro,z
+    entrypoint: ["bash", "/prep.sh"]
     networks:
       - ppe
 
-  # ── OpenVINO Model Server ──
+  # ── OpenVINO Model Server (multi-model via config.json) ──
   ovms:
     image: openvino/model_server:latest
-    # container_name: yolo
     depends_on:
       yolo-model-prep:
         condition: service_completed_successfully
     restart: on-failure
-    command: >-
-      --model_name ppe --model_path /models/ppe --port 8081 --rest_port 8080
+    command:
+      - --config_path
+      - /models/config.json
+      - --port
+      - "8081"
+      - --rest_port
+      - "8080"
     ports:
       - "8081:8081"
       - "8080:8080"

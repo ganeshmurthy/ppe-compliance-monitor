@@ -15,10 +15,24 @@ decoupled from the rest of the application. If the inference backend changes,
 only this module and the runtime need to be updated.
 """
 
+import os
+
 import cv2
 import numpy as np
 from collections import defaultdict
 from pydantic import BaseModel
+
+from logger import get_logger
+
+log = get_logger(__name__)
+
+# YOLO_CLASS_SIGMOID: true | false | auto (default). "auto" applies sigmoid to class
+# channels when values look like logits (outside [0,1] or negative). Some OpenVINO
+# exports emit probabilities already; forcing true on those will break scores.
+#
+# Pre-NMS class score floor and cv2.dnn.NMSBoxes score threshold are fixed below.
+_YOLO_MIN_CLASS_SCORE_BEFORE_NMS = 0.25
+_YOLO_NMS_SCORE_THRESHOLD = 0.20
 
 
 class Detection(BaseModel):
@@ -35,30 +49,116 @@ class Detection(BaseModel):
 EXCLUDED_CLASSES = frozenset(["Safety Cone", "Safety Vest", "machinery", "vehicle"])
 
 
+def _raw_prediction_tensor(outputs) -> np.ndarray:
+    """First output tensor from OVMS / KServe (dict, list, or ndarray)."""
+    if isinstance(outputs, dict):
+        arr = outputs.get("output0")
+        if arr is None:
+            arr = next(iter(outputs.values()))
+    elif isinstance(outputs, (list, tuple)):
+        arr = outputs[0]
+    else:
+        arr = outputs
+    return np.asarray(arr)
+
+
+def _sigmoid(class_scores: np.ndarray) -> np.ndarray:
+    x = np.clip(class_scores.astype(np.float64), -500.0, 500.0)
+    return 1.0 / (1.0 + np.exp(-x))
+
+
+def _apply_class_sigmoid(class_scores: np.ndarray) -> tuple[np.ndarray, bool]:
+    """Return (scores, applied) per YOLO_CLASS_SIGMOID env."""
+    mode = (os.environ.get("YOLO_CLASS_SIGMOID") or "auto").strip().lower()
+    if mode in ("1", "true", "yes"):
+        return _sigmoid(class_scores), True
+    if mode in ("0", "false", "no"):
+        return class_scores, False
+    # auto: logits often outside [0, 1] or negative
+    if class_scores.size == 0:
+        return class_scores, False
+    cmax = float(np.max(class_scores))
+    cmin = float(np.min(class_scores))
+    if cmax > 1.0 + 1e-6 or cmin < -1e-6:
+        return _sigmoid(class_scores), True
+    return class_scores, False
+
+
+def _predictions_matrix(raw: np.ndarray, nc: int) -> np.ndarray:
+    """
+    Return float64 array of shape (num_predictions, 4 + nc) — one row per anchor.
+
+    Ultralytics detect export is usually (1, 4+nc, N) or (1, N, 4+nc); we normalize
+    to (N, 4+nc).
+    """
+    x = np.asarray(raw)
+    while x.ndim > 2 and x.shape[0] == 1:
+        x = x[0]
+    if x.ndim != 2:
+        raise ValueError(
+            f"Expected YOLO output to reduce to 2D (predictions × features); got shape {raw.shape!r}"
+        )
+
+    feat = 4 + nc
+
+    if x.shape[0] == feat:
+        data = x.T
+    elif x.shape[1] == feat:
+        data = x
+    elif x.shape[0] > x.shape[1] and x.shape[1] == feat:
+        data = x
+    elif x.shape[1] > x.shape[0] and x.shape[0] == feat:
+        data = x.T
+    else:
+        log.warning(
+            "YOLO layout ambiguous shape=%s expected feat_dim=%d; "
+            "using short-axis-as-features heuristic (verify with diagnose_yolo_inference.py)",
+            x.shape,
+            feat,
+        )
+        data = x.T if x.shape[0] < x.shape[1] else x
+
+    if data.shape[1] != feat:
+        raise ValueError(
+            f"YOLO feature dimension mismatch: got {data.shape[1]} columns, "
+            f"expected {feat} (4 box + {nc} classes). Check export nc vs app config classes."
+        )
+
+    return data.astype(np.float64)
+
+
 def postprocess_image(
     outputs, scale: float, classes: dict[int, str]
 ) -> list[Detection]:
     """
     Parse raw inference tensor into Detection objects.
 
-    Expects YOLO-style output format. Applies confidence threshold (0.25) and
-    Non-Maximum Suppression.
+    Expects YOLO-style output format. Applies a fixed pre-NMS class score floor
+    and NMS score threshold for ``cv2.dnn.NMSBoxes`` (see module constants
+    ``_YOLO_MIN_CLASS_SCORE_BEFORE_NMS`` and ``_YOLO_NMS_SCORE_THRESHOLD``).
 
     Args:
-        outputs: Raw model output (numpy array or compatible).
+        outputs: Raw model output (numpy array, list/tuple of arrays, or dict).
         scale: Scale factor from preprocessing (model coords → original image).
         classes: Mapping of class_id to class_name.
 
     Returns:
         List of Detection objects.
     """
-    data = outputs[0].T
+    nc = len(classes)
+    raw = _raw_prediction_tensor(outputs)
+    data = _predictions_matrix(raw, nc)
 
-    class_scores = data[:, 4:]
+    class_scores = data[:, 4 : 4 + nc]
+    class_scores, _ = _apply_class_sigmoid(class_scores)
+
     max_scores = class_scores.max(axis=1)
     max_class_ids = class_scores.argmax(axis=1)
 
-    mask = max_scores >= 0.25
+    min_class_conf = _YOLO_MIN_CLASS_SCORE_BEFORE_NMS
+    nms_score_thr = _YOLO_NMS_SCORE_THRESHOLD
+
+    mask = max_scores >= min_class_conf
     data = data[mask]
     scores = max_scores[mask]
     class_ids = max_class_ids[mask]
@@ -66,7 +166,9 @@ def postprocess_image(
     cx, cy, w, h = data[:, 0], data[:, 1], data[:, 2], data[:, 3]
     boxes = np.column_stack([cx - 0.5 * w, cy - 0.5 * h, w, h])
 
-    result_boxes = cv2.dnn.NMSBoxes(boxes.tolist(), scores.tolist(), 0.20, 0.45, 0.5)
+    result_boxes = cv2.dnn.NMSBoxes(
+        boxes.tolist(), scores.tolist(), nms_score_thr, 0.45, 0.5
+    )
 
     detections: list[Detection] = []
     for idx in result_boxes:

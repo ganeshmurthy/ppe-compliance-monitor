@@ -1,60 +1,49 @@
 # Dockerfile for ppe-compliance-monitor-data
 # Uploads model and video files to MinIO (idempotent - skips if already exists)
+#
+# Build context must be the ``app`` directory (see Makefile ``build-push-data``):
+#   podman build -f app/data-image/Dockerfile app
+#
+# Weights: add or replace files under **app/models/** (e.g. ``bird.pt``, ``ppe.pt``)
+# *before* building. Stage 2 runs ``export_models.py``, which exports every ``*.pt`` in
+# that folder to OpenVINO IR and ONNX, except stems listed in ``EXPORT_EXCLUDE_STEMS``
+# (default: ``custome_ppe`` only).
 
-# Stage 1: Extract compressed archives
+# Stage 1: Extract compressed archives + stage raw .pt weights
 FROM alpine:3.19 AS extractor
 
 RUN apk add --no-cache p7zip
 
 WORKDIR /extract
 
-# Copy model archives and extract
-COPY models/custome_ppe.pt.7z.* ./models/
-RUN cd models && 7z x custome_ppe.pt.7z.001
-
 # Copy video archives and extract
 COPY data/combined-video-no-gap-rooftop.mp4.7z.* ./data/
 RUN cd data && 7z x combined-video-no-gap-rooftop.mp4.7z.001
 
-# Copy the existing ppe.pt model (not compressed)
-COPY models/ppe.pt ./models/
+COPY models /extract/models/
 
-# Stage 2: Export model to OpenVINO IR + ONNX formats
+# Stage 2: Export each *.pt to OpenVINO IR + ONNX
 FROM docker.io/ultralytics/ultralytics:latest-cpu AS exporter
 
-COPY --from=extractor /extract/models/ppe.pt /tmp/ppe.pt
+COPY --from=extractor /extract/models /weights
+COPY data-image/export_models.py /tmp/export_models.py
 
-RUN pip install git+https://github.com/openai/CLIP.git && \
-    yolo export model=/tmp/ppe.pt format=openvino task=detect && \
-    mkdir -p /exported/ppe/1 && \
-    cp /tmp/ppe_openvino_model/*.xml /exported/ppe/1/ppe.xml && \
-    cp /tmp/ppe_openvino_model/*.bin /exported/ppe/1/ppe.bin && \
-    yolo export model=/tmp/ppe.pt format=onnx task=detect half=True && \
-    mkdir -p /exported/ppe-onnx/ppe/1 && \
-    cp /tmp/ppe.onnx /exported/ppe-onnx/ppe/1/model.onnx
+RUN pip install --no-cache-dir git+https://github.com/openai/CLIP.git && \
+    python3 /tmp/export_models.py
 
 # Stage 3: Create uploader image with mc CLI
 FROM docker.io/minio/mc:latest
 
 WORKDIR /upload
 
-# Copy extracted files from extractor stage
 COPY --from=extractor /extract/data/combined-video-no-gap-rooftop.mp4 /upload/data/
-COPY --from=extractor /extract/models/custome_ppe.pt /upload/models/
-COPY --from=extractor /extract/models/ppe.pt /upload/models/
-
-# Copy exported OpenVINO model
-COPY --from=exporter /exported/ppe/1/ /upload/models/ppe/1/
-
-# Copy exported ONNX model and TensorRT-enabled Triton config
-COPY --from=exporter /exported/ppe-onnx/ /upload/models/ppe-onnx/
-COPY data-image/config/config.pbtxt /upload/models/ppe-onnx/ppe/config.pbtxt
-
-# Copy upload script
+COPY --from=extractor /extract/models /upload/models-pt/
+COPY --from=exporter /exported-openvino/ /upload/models/
+COPY --from=exporter /exported-onnx/ /upload/models/
+COPY data-image/config/config.pbtxt /upload/triton-config/config.pbtxt
 COPY data-image/upload.sh /upload/upload.sh
 RUN chmod +x /upload/upload.sh
 
-# Default environment variables (can be overridden)
 ENV MINIO_ENDPOINT=http://minio:9000 \
     MINIO_ACCESS_KEY=minioadmin \
     MINIO_SECRET_KEY=minioadmin

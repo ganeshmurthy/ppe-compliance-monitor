@@ -27,6 +27,8 @@ from logger import get_logger
 
 log = get_logger(__name__)
 
+# Minimum detection confidence to draw a box on the MJPEG video feed.
+VIDEO_FEED_DRAW_MIN_CONF = 0.5
 
 app = Flask(__name__)
 api = Blueprint("api", __name__, url_prefix="/api")
@@ -45,7 +47,7 @@ CORS(app, resources={r"/*": {"origins": cors_allowed_origins}})
 # Video source is selected dynamically by the user (MP4 or RTSP from config).
 demo = MultiModalAIDemo()
 demo.setup_components()
-log.info("MultiModalAIDemo initialized (source: user-selected from UI)")
+log.info("MultiModalAIDemo initialized (video source selected from UI)")
 
 llm_chat = LLMChat()
 
@@ -53,7 +55,7 @@ latest_description = "Initializing..."
 latest_summary = "Processing video..."
 
 
-def generate_response_frames():
+def generate_response_frames(client_remote=None, feed_config_param=None):
     """Generate MJPEG video stream for the /api/video_feed endpoint.
 
     This generator runs in a loop, fetching the latest frame and detections from
@@ -68,35 +70,50 @@ def generate_response_frames():
 
     The display path is decoupled from inference: frames come from a reader thread,
     detections from an inference process. If no frame is available, the loop
-    continues without yielding. Duplicate frames (same frame_id) are skipped.
+    continues without yielding. Duplicate frames (same buffer epoch + frame_id) are skipped
+    so reader read_count resets on source switch do not stall the stream; periodic resend
+    keeps MJPEG alive if the reader temporarily stalls on the same id.
     """
     global latest_description, latest_summary
-    log.info("Video feed: client connected, starting frame loop")
     none_count = 0
     last_none_log = 0.0
     frame_count = 0
-    last_sent_frame_id = None
+    last_sent_key = (
+        None  # (frame_epoch, frame_id) — epoch distinguishes source switches
+    )
+    last_jpeg_wall_s = 0.0
     try:
         while True:
-            frame, detections, frame_id = demo.get_frame_for_display(
+            frame, detections, frame_id, frame_epoch = demo.get_frame_for_display(
                 resize_to=(1920, 1080)
             )
             if frame is None:
                 none_count += 1
-                if none_count == 1:
-                    log.warning("Video feed: first None received (no frame to display)")
                 now = time.time()
                 if now - last_none_log >= 5.0:
                     log.warning(
-                        "Video feed: received None %d times in last 5s (no frames to display)",
+                        "Video feed: no frame to display (%d times in ~5s, %d JPEGs sent)",
                         none_count,
+                        frame_count,
                     )
                     last_none_log = now
                     none_count = 0
+                time.sleep(0.02)
                 continue
 
-            # Skip sending duplicate frames (same frame_id as last sent)
-            if frame_id is not None and frame_id == last_sent_frame_id:
+            dup_key = (
+                (frame_epoch, frame_id)
+                if frame_id is not None and frame_epoch >= 0
+                else None
+            )
+            now_wall = time.time()
+            mjpeg_keepalive = (
+                dup_key is not None
+                and dup_key == last_sent_key
+                and last_jpeg_wall_s > 0
+                and (now_wall - last_jpeg_wall_s) >= 0.35
+            )
+            if dup_key is not None and dup_key == last_sent_key and not mjpeg_keepalive:
                 time.sleep(0.001)  # Avoid tight loop when waiting for new frame
                 continue
 
@@ -119,7 +136,7 @@ def generate_response_frames():
                     continue
                 conf = detection["confidence"]
                 currentClass = detection["class_name"]
-                if conf > 0.5:
+                if conf > VIDEO_FEED_DRAW_MIN_CONF:
                     if currentClass == "Person":
                         color = (0, 255, 255)  # Cyan for person
                     elif currentClass in ["NO-Hardhat", "NO-Safety Vest", "NO-Mask"]:
@@ -181,11 +198,15 @@ def generate_response_frames():
                 ".jpg", annotated_frame, [cv2.IMWRITE_JPEG_QUALITY, 95]
             )
             if not ret:
-                log.warning("Video feed: cv2.imencode failed")
+                log.warning(
+                    "Video feed: cv2.imencode failed shape=%s",
+                    getattr(annotated_frame, "shape", None),
+                )
                 continue
             frame_bytes = buffer.tobytes()
             frame_count += 1
-            last_sent_frame_id = frame_id
+            last_sent_key = dup_key
+            last_jpeg_wall_s = time.time()
             try:
                 # Content-Length helps Chrome parse each part correctly (avoids distortion from boundary misparsing)
                 header = (
@@ -195,21 +216,26 @@ def generate_response_frames():
                 )
                 yield header + frame_bytes + b"\r\n"
             except (BrokenPipeError, ConnectionResetError, OSError) as e:
-                log.warning("Video feed: client connection lost during yield: %s", e)
+                log.warning(
+                    "Video feed: client disconnected during yield: %s (frames_sent=%s)",
+                    e,
+                    frame_count,
+                )
                 break
-    except GeneratorExit:
-        log.debug("Video feed: client disconnected (GeneratorExit)")
     except Exception as e:
         log.exception("Video feed: exception in stream loop: %s", e)
-    finally:
-        log.debug("Video feed: stream ended (total frames sent: %d)", frame_count)
 
 
 @api.route("/video_feed")
 def video_feed():
     """Video streaming route."""
+    feed_cfg = request.args.get("config")
     response = Response(
-        generate_response_frames(), mimetype="multipart/x-mixed-replace; boundary=frame"
+        generate_response_frames(
+            request.remote_addr,
+            feed_config_param=feed_cfg,
+        ),
+        mimetype="multipart/x-mixed-replace; boundary=frame",
     )
     # Disable proxy buffering to reduce periodic pauses (OpenShift/HAProxy)
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
@@ -231,12 +257,26 @@ def latest_info():
         if demo._display_description:
             latest_description = demo._display_description
         latest_summary = demo._display_summary or demo.latest_summary or latest_summary
-        inference_ready = demo._results_received_count > 0
+        results_received = demo._results_received_count > 0
+        _cfg = demo._active_config_id
+    process_ready = (
+        demo._inference_ready_event is not None and demo._inference_ready_event.is_set()
+    )
+    # Clear the "Loading model" overlay once inference has bound the pipeline OR produced
+    # a result. Relying only on the first result can leave the UI blank if OVMS is slow or
+    # the first frame is still in flight after INIT/RELOAD.
+    ui_ready = results_received or process_ready
+    _video = (
+        (demo.video_source or "")[:200] if getattr(demo, "video_source", None) else ""
+    )
     return jsonify(
         {
             "description": latest_description,
             "summary": latest_summary,
-            "inference_ready": inference_ready,
+            "inference_ready": ui_ready,
+            "inference_process_ready": process_ready,
+            "active_config_id": _cfg,
+            "video_source": _video,
         }
     )
 
@@ -331,6 +371,7 @@ def config_create():
     """Create a new app config."""
     data = request.get_json(silent=True) or {}
     model_url = (data.get("model_url") or "").strip()
+    model_name = (data.get("model_name") or "").strip()
     video_source = (data.get("video_source") or "").strip()
     classes_raw = data.get("classes")
     if classes_raw is None:
@@ -341,10 +382,12 @@ def config_create():
         return jsonify({"error": str(e)}), 400
     if not model_url:
         return jsonify({"error": "Field 'model_url' is required"}), 400
+    if not model_name:
+        return jsonify({"error": "Field 'model_name' is required"}), 400
     if not video_source:
         return jsonify({"error": "Field 'video_source' is required"}), 400
     try:
-        config_id = insert_config(model_url, video_source)
+        config_id = insert_config(model_url, video_source, model_name)
         replace_detection_classes(config_id, entries)
         if _is_s3_video_path(video_source):
             _generate_thumbnail(video_source)
@@ -359,6 +402,7 @@ def config_update(config_id):
     """Update an existing app config."""
     data = request.get_json(silent=True) or {}
     model_url = (data.get("model_url") or "").strip()
+    model_name = (data.get("model_name") or "").strip()
     video_source = (data.get("video_source") or "").strip()
     classes_raw = data.get("classes")
     if classes_raw is None:
@@ -369,11 +413,13 @@ def config_update(config_id):
         return jsonify({"error": str(e)}), 400
     if not model_url:
         return jsonify({"error": "Field 'model_url' is required"}), 400
+    if not model_name:
+        return jsonify({"error": "Field 'model_name' is required"}), 400
     if not video_source:
         return jsonify({"error": "Field 'video_source' is required"}), 400
     try:
         replace_detection_classes(config_id, entries)
-        updated = update_config(config_id, model_url, video_source)
+        updated = update_config(config_id, model_url, video_source, model_name)
         if not updated:
             return jsonify({"error": "Config not found"}), 404
         if _is_s3_video_path(video_source):
@@ -403,7 +449,13 @@ def active_config_set():
         return jsonify({"error": "Config has no video source"}), 400
     try:
         demo.start_streaming(video_source, config_id=config_id)
-        return jsonify({"message": "Active config set", "video_source": video_source})
+        return jsonify(
+            {
+                "message": "Active config set",
+                "video_source": video_source,
+                "active_config_id": demo._active_config_id,
+            }
+        )
     except Exception as e:
         log.exception("active_config_set: %s", e)
         return jsonify({"error": str(e)}), 500

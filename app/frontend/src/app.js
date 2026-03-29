@@ -24,6 +24,7 @@ function App() {
     }
     try {
       await axios.post(`${API_URL}/active_config`, { config_id: configId });
+      // Drive the video URL only after the backend has started the stream (avoids MJPEG before start_streaming).
       setActiveConfigId(configId);
     } catch (err) {
       console.error('Failed to set active config:', err);

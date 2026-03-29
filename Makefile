@@ -3,7 +3,7 @@
 help:
 	@echo "Available targets:"
 	@echo "  local-up   - Start local stack with Podman Compose"
-	@echo "  local-build-up - Build and start local stack"
+	@echo "  local-build-up - Build and start local stack (see podman-compose backend env)"
 	@echo "  local-down - Stop local stack"
 	@echo "  build      - Build container image"
 	@echo "  push       - Push container image"
