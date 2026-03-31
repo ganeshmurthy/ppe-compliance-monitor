@@ -37,6 +37,10 @@ optimization {
           key: "max_workspace_size_bytes"
           value: "1073741824"
         }
+        parameters {
+          key: "trt_builder_optimization_level"
+          value: "2"
+        }
       }
     ]
   }
