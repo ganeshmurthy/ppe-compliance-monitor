@@ -3,7 +3,7 @@ PostgreSQL database module for PPE compliance tracking.
 
 Schema:
 - app_config: User-defined configs (model_url, model_name for OVMS, video_source) — classes come from detection_classes
-- detection_classes: Class definitions (model_class_index, name, trackable) per config - FK to app_config
+- detection_classes: Class definitions (model_class_index, name, trackable, include_in_counts) per config - FK to app_config
 - detection_tracks: Generic tracks for detected objects
 - detection_observations: Per-track observations with flexible JSONB attributes
 """
@@ -116,6 +116,10 @@ def _init_schema():
             CREATE INDEX IF NOT EXISTS idx_detection_classes_app_config_id
             ON detection_classes(app_config_id)
         """)
+        cursor.execute("""
+            ALTER TABLE detection_classes
+            ADD COLUMN IF NOT EXISTS include_in_counts BOOLEAN NOT NULL DEFAULT true
+        """)
 
         # Create detection_tracks table - generic tracks for any detection type
         cursor.execute("""
@@ -211,11 +215,11 @@ def insert_detection_observation(
 
 
 def replace_detection_classes(
-    app_config_id: int, entries: list[tuple[int, str, bool]]
+    app_config_id: int, entries: list[tuple[int, str, bool, bool]]
 ) -> None:
     """
     Replace all detection classes for a config. Deletes existing, inserts new.
-    entries: list of (model_class_index, name, trackable).
+    entries: list of (model_class_index, name, trackable, include_in_counts).
     """
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -223,11 +227,18 @@ def replace_detection_classes(
             "DELETE FROM detection_classes WHERE app_config_id = %s",
             (app_config_id,),
         )
-        for model_class_index, name, trackable in entries:
+        for model_class_index, name, trackable, include_in_counts in entries:
             cursor.execute(
-                """INSERT INTO detection_classes (app_config_id, model_class_index, name, trackable)
-                   VALUES (%s, %s, %s, %s)""",
-                (app_config_id, model_class_index, name.strip(), bool(trackable)),
+                """INSERT INTO detection_classes
+                   (app_config_id, model_class_index, name, trackable, include_in_counts)
+                   VALUES (%s, %s, %s, %s, %s)""",
+                (
+                    app_config_id,
+                    model_class_index,
+                    name.strip(),
+                    bool(trackable),
+                    bool(include_in_counts),
+                ),
             )
         conn.commit()
 
@@ -244,20 +255,37 @@ def get_detection_classes_for_config(app_config_id: int) -> dict[int, str]:
         return {row[0]: row[1] for row in cursor.fetchall()}
 
 
+def get_include_in_counts_by_class_index(app_config_id: int) -> dict[int, bool]:
+    """Return {model_class_index: include_in_counts} for process_detections."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """SELECT model_class_index, include_in_counts FROM detection_classes
+               WHERE app_config_id = %s ORDER BY model_class_index""",
+            (app_config_id,),
+        )
+        return {row[0]: bool(row[1]) for row in cursor.fetchall()}
+
+
 def get_classes_for_config(app_config_id: int) -> dict:
     """
     Build classes dict from detection_classes for API response.
-    Returns {"0":{"name":"Person","trackable":true}, "1":{"name":"Hardhat","trackable":false}, ...}
+    Returns {"0":{"name","trackable","include_in_counts"}, ...}.
     """
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            """SELECT model_class_index, name, trackable FROM detection_classes
+            """SELECT model_class_index, name, trackable, include_in_counts
+               FROM detection_classes
                WHERE app_config_id = %s ORDER BY model_class_index""",
             (app_config_id,),
         )
         return {
-            str(row[0]): {"name": row[1], "trackable": row[2]}
+            str(row[0]): {
+                "name": row[1],
+                "trackable": row[2],
+                "include_in_counts": bool(row[3]),
+            }
             for row in cursor.fetchall()
         }
 
@@ -269,7 +297,7 @@ def get_detection_class_by_name_and_config(
     with get_connection() as conn:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute(
-            """SELECT id, app_config_id, model_class_index, name, trackable
+            """SELECT id, app_config_id, model_class_index, name, trackable, include_in_counts
                FROM detection_classes WHERE name = %s AND app_config_id = %s""",
             (name.strip(), app_config_id),
         )
