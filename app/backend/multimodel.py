@@ -19,6 +19,7 @@ from database import (
     insert_detection_observation,
     get_detection_classes_for_config,
     get_detection_class_by_name_and_config,
+    get_include_in_counts_by_class_index,
     get_all_configs,
     get_config_by_id,
 )
@@ -97,18 +98,18 @@ def _associate_ppe_to_person(person_bbox, all_detections):
     return status
 
 
-def format_detection_description(detections_class_count: dict[str, int]) -> str:
-    """Build a short, human-readable description from detection counts."""
+def model_class_names_in_order(classes: dict[int, str]) -> list[str]:
+    """Class names in model_class_index order (for Latest Detection text)."""
+    return [classes[i] for i in sorted(classes.keys())]
+
+
+def format_detection_description(
+    detections_class_count: dict[str, int],
+    class_names_in_order: list[str],
+) -> str:
+    """Build a short, human-readable description from counts; order follows config/model indices."""
     description = "Detected: "
-    for item in [
-        "Person",
-        "Hardhat",
-        "Safety Vest",
-        "Mask",
-        "NO-Hardhat",
-        "NO-Safety Vest",
-        "NO-Mask",
-    ]:
+    for item in class_names_in_order:
         if detections_class_count.get(item, 0) > 0:
             description += f"{item}: {detections_class_count[item]}, "
     return description.rstrip(", ")
@@ -216,6 +217,7 @@ def _inference_process_target(
     last_seen_update_interval = 30
     frames_since_last_seen_update = 0
     latest_summary = ""
+    include_in_counts_by_class_id: dict[int, bool] = {}
 
     def reset_tracking_state() -> None:
         nonlocal description_buffer, frame_count, person_history, person_last_state
@@ -230,7 +232,7 @@ def _inference_process_target(
 
     def build_pipeline(active_config_id) -> None:
         """Load DB config, create Runtime + DeepSORT. Raises ValueError on bad config."""
-        nonlocal runtime, tracker, person_class_id
+        nonlocal runtime, tracker, person_class_id, include_in_counts_by_class_id
         from deep_sort_realtime.deepsort_tracker import DeepSort
 
         config = None
@@ -269,6 +271,9 @@ def _inference_process_target(
             model_name,
         )
         runtime = Runtime(classes=classes, service_url=model_url, model_name=model_name)
+        include_in_counts_by_class_id = get_include_in_counts_by_class_index(
+            config["id"]
+        )
         person_class = get_detection_class_by_name_and_config("Person", config["id"])
         person_class_id = person_class["id"] if person_class else None
         tracker = DeepSort(max_age=30, n_init=3)
@@ -401,7 +406,8 @@ def _inference_process_target(
 
             runtime_detections = runtime.run(frame)
             detections, counts, person_detections_for_tracker = process_detections(
-                runtime_detections
+                runtime_detections,
+                include_in_counts_by_class_id,
             )
 
             tracked_person_boxes = {}
@@ -422,7 +428,9 @@ def _inference_process_target(
                         x1, y1, x2, y2 = map(int, ltrb)
                         tracked_person_boxes[track_id] = (x1, y1, x2, y2)
 
-            description = format_detection_description(counts)
+            description = format_detection_description(
+                counts, model_class_names_in_order(runtime.CLASSES)
+            )
             description_buffer.append(description)
             if len(description_buffer) > 50:
                 description_buffer.pop(0)
@@ -904,8 +912,11 @@ class MultiModalAIDemo:
     def format_detection_description(
         self, detections_class_count: dict[str, int]
     ) -> str:
-        """Build a short, human-readable description from detection counts."""
-        return format_detection_description(detections_class_count)
+        """Build a short description from counts (alphabetical order; no runtime classes in main process)."""
+        return format_detection_description(
+            detections_class_count,
+            sorted(detections_class_count.keys()),
+        )
 
     def append_description(self, description):
         """No-op in main process; inference process maintains its own buffer."""

@@ -45,10 +45,6 @@ class Detection(BaseModel):
     scale: float
 
 
-# Classes to exclude from PPE pipeline (not person or PPE items)
-EXCLUDED_CLASSES = frozenset(["Safety Cone", "Safety Vest", "machinery", "vehicle"])
-
-
 def _raw_prediction_tensor(outputs) -> np.ndarray:
     """First output tensor from OVMS / KServe (dict, list, or ndarray)."""
     if isinstance(outputs, dict):
@@ -187,18 +183,22 @@ def postprocess_image(
 
 def process_detections(
     runtime_detections: list[Detection],
+    include_in_counts_by_class_id: dict[int, bool] | None = None,
 ) -> tuple[list[dict], defaultdict, list]:
     """
     Convert Detection objects into app format for display and tracking.
 
     Args:
         runtime_detections: Detections from postprocess_image or runtime.
+        include_in_counts_by_class_id: Per model_class_index flag from detection_classes.
+            When False, the detection is omitted (no boxes, counts, or tracker input).
+            None or missing keys default to True.
 
     Returns:
         Tuple of:
         - detections: List of dicts with bbox (x1,y1,x2,y2), confidence,
           class_id, class_name.
-        - counts: defaultdict of class_name -> count (excluding EXCLUDED_CLASSES).
+        - counts: defaultdict of class_name -> count.
         - person_detections_for_tracker: List of ([left, top, w, h], conf, "Person")
           for DeepSORT.
     """
@@ -207,7 +207,9 @@ def process_detections(
     person_detections_for_tracker = []
 
     for d in runtime_detections:
-        if d.class_name in EXCLUDED_CLASSES:
+        if include_in_counts_by_class_id is not None and not (
+            include_in_counts_by_class_id.get(d.class_id, True)
+        ):
             continue
         counts[d.class_name] += 1
         x, y, w, h = d.bbox
