@@ -125,7 +125,8 @@ def _init_schema():
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS detection_tracks (
                 track_id INTEGER PRIMARY KEY,
-                detection_classes_id INTEGER NOT NULL REFERENCES detection_classes(id),
+                detection_classes_id INTEGER NOT NULL REFERENCES detection_classes(id)
+                    ON DELETE CASCADE,
                 first_seen TIMESTAMP NOT NULL,
                 last_seen TIMESTAMP NOT NULL
             )
@@ -139,6 +140,7 @@ def _init_schema():
                 timestamp TIMESTAMP NOT NULL,
                 attributes JSONB NOT NULL DEFAULT '{}',
                 FOREIGN KEY (track_id) REFERENCES detection_tracks(track_id)
+                    ON DELETE CASCADE
             )
         """)
 
@@ -154,6 +156,29 @@ def _init_schema():
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_detection_observations_attributes
             ON detection_observations USING GIN (attributes)
+        """)
+
+        # Upgrade old DBs: FKs without ON DELETE CASCADE block deleting app_config when
+        # tracks/observations exist. Recreate with CASCADE (idempotent for new installs).
+        cursor.execute(
+            "ALTER TABLE detection_tracks DROP CONSTRAINT IF EXISTS "
+            "detection_tracks_detection_classes_id_fkey"
+        )
+        cursor.execute("""
+            ALTER TABLE detection_tracks
+            ADD CONSTRAINT detection_tracks_detection_classes_id_fkey
+            FOREIGN KEY (detection_classes_id)
+            REFERENCES detection_classes(id) ON DELETE CASCADE
+        """)
+        cursor.execute(
+            "ALTER TABLE detection_observations DROP CONSTRAINT IF EXISTS "
+            "detection_observations_track_id_fkey"
+        )
+        cursor.execute("""
+            ALTER TABLE detection_observations
+            ADD CONSTRAINT detection_observations_track_id_fkey
+            FOREIGN KEY (track_id)
+            REFERENCES detection_tracks(track_id) ON DELETE CASCADE
         """)
 
         conn.commit()
@@ -353,24 +378,8 @@ def insert_config(model_url: str, video_source: str, model_name: str) -> int:
         return row_id
 
 
-def update_config(
-    config_id: int, model_url: str, video_source: str, model_name: str
-) -> bool:
-    """Update an existing config. Returns True if a row was updated. Classes updated via replace_detection_classes."""
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            """UPDATE app_config SET model_url = %s, video_source = %s, model_name = %s
-               WHERE id = %s""",
-            (model_url, video_source, model_name, config_id),
-        )
-        updated = cursor.rowcount > 0
-        conn.commit()
-        return updated
-
-
 def delete_config(config_id: int) -> bool:
-    """Delete a config. Returns True if a row was deleted."""
+    """Delete a config row. Cascades to detection_classes, detection_tracks, detection_observations."""
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM app_config WHERE id = %s", (config_id,))
