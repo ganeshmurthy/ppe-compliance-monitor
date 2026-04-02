@@ -34,7 +34,6 @@ const ConfigModal = ({ isOpen, onClose }) => {
   const [video, setVideo] = useState('');
   const [classes, setClasses] = useState('');
   const [configs, setConfigs] = useState([]);
-  const [editingId, setEditingId] = useState(null);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [loading, setLoading] = useState(false);
@@ -54,7 +53,6 @@ const ConfigModal = ({ isOpen, onClose }) => {
       fetchConfigs();
       setError('');
       setSuccess('');
-      setEditingId(null);
       setModelUrl('');
       setOvmsModelName('');
       setVideo('');
@@ -102,65 +100,20 @@ const ConfigModal = ({ isOpen, onClose }) => {
     }
   };
 
-  const handleUpdate = async () => {
-    if (!editingId || !allFieldsValid) return;
-    setError('');
-    setLoading(true);
-    try {
-      const classesObj = JSON.parse(classes.trim());
-      await axios.put(`${API_URL}/config/${editingId}`, {
-        model_url: modelUrl.trim(),
-        model_name: ovmsModelName.trim(),
-        video_source: video.trim(),
-        classes: classesObj,
-      });
-      await fetchConfigs();
-      setEditingId(null);
-      setModelUrl('');
-      setOvmsModelName('');
-      setVideo('');
-      setClasses('');
-    } catch (err) {
-      setError(err.response?.data?.error || err.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleEdit = (config) => {
-    setEditingId(config.id);
-    setModelUrl(config.model_url || '');
-    setOvmsModelName(String(config.model_name ?? '').trim());
-    setVideo(config.video_source || '');
-    // config.classes: either {"0":{"name":"Person","trackable":true}} (new) or {"0":"Person"} (old)
-    const cls = config.classes;
-    const newFormat =
-      typeof cls === 'object' && cls !== null
-        ? Object.fromEntries(
-            Object.entries(cls).map(([idx, val]) => {
-              if (val && typeof val === 'object' && 'name' in val) {
-                return [idx, { name: String(val.name || ''), trackable: Boolean(val.trackable) }];
-              }
-              return [idx, { name: String(val || ''), trackable: false }];
-            })
-          )
-        : {};
-    setClasses(JSON.stringify(newFormat, null, 2));
-  };
-
   const handleDelete = async (id) => {
-    if (!window.confirm('Delete this config?')) return;
+    if (
+      !window.confirm(
+        'Delete this configuration? All detection classes, tracks, and observations for this config will be removed. This cannot be undone.',
+      )
+    ) {
+      return;
+    }
     setError('');
+    setSuccess('');
     try {
       await axios.delete(`${API_URL}/config/${id}`);
       await fetchConfigs();
-      if (editingId === id) {
-        setEditingId(null);
-        setModelUrl('');
-        setOvmsModelName('');
-        setVideo('');
-        setClasses('');
-      }
+      setSuccess('Configuration deleted.');
     } catch (err) {
       setError(err.response?.data?.error || err.message);
     }
@@ -187,7 +140,6 @@ const ConfigModal = ({ isOpen, onClose }) => {
   };
 
   const handleClose = () => {
-    setEditingId(null);
     setError('');
     onClose();
   };
@@ -293,39 +245,14 @@ const ConfigModal = ({ isOpen, onClose }) => {
           {success && <div className="config-success" role="status">{success}</div>}
 
           <div className="config-actions">
-            {editingId ? (
-              <button
-                className="config-btn config-btn-primary"
-                onClick={handleUpdate}
-                disabled={!allFieldsValid || loading}
-                title={!allFieldsValid ? 'Fill all required fields with valid values' : undefined}
-              >
-                {loading ? 'Updating...' : 'Update'}
-              </button>
-            ) : (
-              <button
-                className="config-btn config-btn-primary"
-                onClick={handleAdd}
-                disabled={!allFieldsValid || loading}
-                title={!allFieldsValid ? 'Fill all required fields with valid values' : undefined}
-              >
-                {loading ? 'Adding...' : 'Add'}
-              </button>
-            )}
-            {editingId && (
-              <button
-                className="config-btn config-btn-secondary"
-                onClick={() => {
-                  setEditingId(null);
-                  setModelUrl('');
-                  setOvmsModelName('');
-                  setVideo('');
-                  setClasses('');
-                }}
-              >
-                Cancel
-              </button>
-            )}
+            <button
+              className="config-btn config-btn-primary"
+              onClick={handleAdd}
+              disabled={!allFieldsValid || loading}
+              title={!allFieldsValid ? 'Fill all required fields with valid values' : undefined}
+            >
+              {loading ? 'Adding...' : 'Add'}
+            </button>
           </div>
         </div>
 
@@ -360,10 +287,11 @@ const ConfigModal = ({ isOpen, onClose }) => {
                       <td className="config-table-cell">{c.video_source}</td>
                       <td>
                         <button
-                          className="config-table-btn config-table-btn-edit"
-                          onClick={() => handleEdit(c)}
+                          type="button"
+                          className="config-table-btn config-table-btn-delete"
+                          onClick={() => handleDelete(c.id)}
                         >
-                          Edit
+                          Delete
                         </button>
                       </td>
                     </tr>

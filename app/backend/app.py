@@ -20,7 +20,7 @@ from database import (
     get_all_configs,
     get_config_by_id,
     insert_config,
-    update_config,
+    delete_config,
     replace_detection_classes,
 )
 from logger import get_logger
@@ -399,36 +399,20 @@ def config_create():
         return jsonify({"error": str(e)}), 500
 
 
-@api.route("/config/<int:config_id>", methods=["PUT"])
-def config_update(config_id):
-    """Update an existing app config."""
-    data = request.get_json(silent=True) or {}
-    model_url = (data.get("model_url") or "").strip()
-    model_name = (data.get("model_name") or "").strip()
-    video_source = (data.get("video_source") or "").strip()
-    classes_raw = data.get("classes")
-    if classes_raw is None:
-        return jsonify({"error": "Field 'classes' is required"}), 400
+@api.route("/config/<int:config_id>", methods=["DELETE"])
+def config_delete(config_id):
+    """Delete an app config and all dependent rows (classes, tracks, observations)."""
     try:
-        classes, entries = _parse_classes(classes_raw)
-    except (ValueError, json.JSONDecodeError) as e:
-        return jsonify({"error": str(e)}), 400
-    if not model_url:
-        return jsonify({"error": "Field 'model_url' is required"}), 400
-    if not model_name:
-        return jsonify({"error": "Field 'model_name' is required"}), 400
-    if not video_source:
-        return jsonify({"error": "Field 'video_source' is required"}), 400
-    try:
-        replace_detection_classes(config_id, entries)
-        updated = update_config(config_id, model_url, video_source, model_name)
-        if not updated:
+        cfg = get_config_by_id(config_id)
+        if not cfg:
             return jsonify({"error": "Config not found"}), 404
-        if _is_s3_video_path(video_source):
-            _generate_thumbnail(video_source)
-        return jsonify({"message": "Config updated"})
+        demo.stop_streaming_if_active_config(config_id)
+        deleted = delete_config(config_id)
+        if not deleted:
+            return jsonify({"error": "Config not found"}), 404
+        return jsonify({"message": "Config deleted"})
     except Exception as e:
-        log.exception("config_update: %s", e)
+        log.exception(f"config_delete: {e}")
         return jsonify({"error": str(e)}), 500
 
 
