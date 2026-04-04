@@ -292,6 +292,34 @@ def get_include_in_counts_by_class_index(app_config_id: int) -> dict[int, bool]:
         return {row[0]: bool(row[1]) for row in cursor.fetchall()}
 
 
+def get_detection_classes_pipeline_maps(
+    app_config_id: int,
+) -> tuple[dict[int, str], dict[int, bool], dict[int, bool], dict[str, int]]:
+    """
+    Single query for inference startup: class names for Runtime, flags for
+    process_detections, and detection_classes.id by class name (for track FK).
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """SELECT id, model_class_index, name, include_in_counts, trackable
+               FROM detection_classes
+               WHERE app_config_id = %s ORDER BY model_class_index""",
+            (app_config_id,),
+        )
+        rows = cursor.fetchall()
+    classes: dict[int, str] = {}
+    include_in_counts: dict[int, bool] = {}
+    trackable: dict[int, bool] = {}
+    name_to_id: dict[str, int] = {}
+    for row_id, model_class_index, name, inc, trk in rows:
+        classes[model_class_index] = name
+        include_in_counts[model_class_index] = bool(inc)
+        trackable[model_class_index] = bool(trk)
+        name_to_id[name.strip()] = int(row_id)
+    return classes, include_in_counts, trackable, name_to_id
+
+
 def get_classes_for_config(app_config_id: int) -> dict:
     """
     Build classes dict from detection_classes for API response.
