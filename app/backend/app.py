@@ -137,8 +137,8 @@ def generate_response_frames(client_remote=None, feed_config_param=None):
                 conf = detection["confidence"]
                 currentClass = detection["class_name"]
                 if conf > VIDEO_FEED_DRAW_MIN_CONF:
-                    if currentClass == "Person":
-                        color = (0, 255, 255)  # Cyan for person
+                    if detection.get("track_id") is not None:
+                        color = (0, 255, 255)  # Cyan for tracked targets
                     elif currentClass in ["NO-Hardhat", "NO-Safety Vest", "NO-Mask"]:
                         color = (0, 0, 255)  # Red for non-compliance
                     elif currentClass in ["Hardhat", "Safety Vest", "Mask"]:
@@ -154,11 +154,8 @@ def generate_response_frames(client_remote=None, feed_config_param=None):
                         lineType=line_type,
                     )
                     label = f"{currentClass} {conf:.2f}"
-                    if (
-                        currentClass == "Person"
-                        and detection.get("track_id") is not None
-                    ):
-                        label = f"Person #{detection['track_id']} {conf:.2f}"
+                    if detection.get("track_id") is not None:
+                        label = f"{currentClass} #{detection['track_id']} {conf:.2f}"
                     text_size = cv2.getTextSize(
                         label, cv2.FONT_HERSHEY_SIMPLEX, 0.9, 2
                     )[0]

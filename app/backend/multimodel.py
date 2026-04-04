@@ -17,9 +17,7 @@ from database import (
     insert_detection_track,
     update_detection_track_last_seen,
     insert_detection_observation,
-    get_detection_classes_for_config,
-    get_detection_class_by_name_and_config,
-    get_include_in_counts_by_class_index,
+    get_detection_classes_pipeline_maps,
     get_all_configs,
     get_config_by_id,
 )
@@ -205,7 +203,6 @@ def _inference_process_target(
     shm_h = shm_w = 0
     runtime = None
     tracker = None
-    person_class_id = None
     # Mirrors main-process _stream_epoch for results tagging (drops stale after switch).
     pipeline_epoch = -1
 
@@ -218,6 +215,8 @@ def _inference_process_target(
     frames_since_last_seen_update = 0
     latest_summary = ""
     include_in_counts_by_class_id: dict[int, bool] = {}
+    trackable_by_class_id: dict[int, bool] = {}
+    detection_class_name_to_id: dict[str, int] = {}
 
     def reset_tracking_state() -> None:
         nonlocal description_buffer, frame_count, person_history, person_last_state
@@ -232,7 +231,8 @@ def _inference_process_target(
 
     def build_pipeline(active_config_id) -> None:
         """Load DB config, create Runtime + DeepSORT. Raises ValueError on bad config."""
-        nonlocal runtime, tracker, person_class_id, include_in_counts_by_class_id
+        nonlocal runtime, tracker, include_in_counts_by_class_id
+        nonlocal trackable_by_class_id, detection_class_name_to_id
         from deep_sort_realtime.deepsort_tracker import DeepSort
 
         config = None
@@ -252,7 +252,12 @@ def _inference_process_target(
             raise ValueError(
                 "No config available. Add a config via the Config dialog first."
             )
-        classes = get_detection_classes_for_config(config["id"])
+        (
+            classes,
+            include_in_counts_by_class_id,
+            trackable_by_class_id,
+            detection_class_name_to_id,
+        ) = get_detection_classes_pipeline_maps(config["id"])
         if not classes:
             raise ValueError(
                 "No detection classes available. Add a config via the Config dialog first."
@@ -265,17 +270,10 @@ def _inference_process_target(
             )
         model_name = (config.get("model_name") or "").strip() or "ppe"
         log.info(
-            "Inference process: creating Runtime config_id=%s service_url=%s model_name=%s",
-            config["id"],
-            model_url,
-            model_name,
+            f"Inference process: creating Runtime config_id={config['id']} "
+            f"service_url={model_url} model_name={model_name}"
         )
         runtime = Runtime(classes=classes, service_url=model_url, model_name=model_name)
-        include_in_counts_by_class_id = get_include_in_counts_by_class_index(
-            config["id"]
-        )
-        person_class = get_detection_class_by_name_and_config("Person", config["id"])
-        person_class_id = person_class["id"] if person_class else None
         tracker = DeepSort(max_age=30, n_init=3)
 
     def handle_init_shm(msg: dict) -> None:
@@ -405,20 +403,20 @@ def _inference_process_target(
             frame_ready_event.clear()
 
             runtime_detections = runtime.run(frame)
-            detections, counts, person_detections_for_tracker = process_detections(
+            detections, counts, tracker_input_dets = process_detections(
                 runtime_detections,
                 include_in_counts_by_class_id,
+                trackable_by_class_id,
             )
 
-            tracked_person_boxes = {}
-            if person_detections_for_tracker:
+            tracked_target_boxes: dict[int, tuple[int, int, int, int]] = {}
+            track_det_class: dict[int, str] = {}
+            if tracker_input_dets:
                 tracks = []
                 try:
-                    tracks = tracker.update_tracks(
-                        person_detections_for_tracker, frame=frame
-                    )
+                    tracks = tracker.update_tracks(tracker_input_dets, frame=frame)
                 except IndexError as e:
-                    log.error("Inference: tracker IndexError: %s", e, exc_info=True)
+                    log.error(f"Inference: tracker IndexError: {e}", exc_info=True)
                 for track in tracks:
                     if not track.is_confirmed():
                         continue
@@ -426,7 +424,10 @@ def _inference_process_target(
                     ltrb = track.to_ltrb()
                     if ltrb is not None:
                         x1, y1, x2, y2 = map(int, ltrb)
-                        tracked_person_boxes[track_id] = (x1, y1, x2, y2)
+                        tracked_target_boxes[track_id] = (x1, y1, x2, y2)
+                    dc = track.get_det_class()
+                    if dc:
+                        track_det_class[track_id] = dc
 
             description = format_detection_description(
                 counts, model_class_names_in_order(runtime.CLASSES)
@@ -436,11 +437,16 @@ def _inference_process_target(
                 description_buffer.pop(0)
 
             for det in detections:
-                if det["class_name"] == "Person":
-                    for tid, pbox in tracked_person_boxes.items():
-                        if _boxes_overlap(det["bbox"], pbox):
-                            det["track_id"] = tid
-                            break
+                if not trackable_by_class_id.get(det["class_id"], False):
+                    continue
+                dname = det["class_name"]
+                for tid, pbox in tracked_target_boxes.items():
+                    tcn = track_det_class.get(tid)
+                    if tcn is not None and tcn != dname:
+                        continue
+                    if _boxes_overlap(det["bbox"], pbox):
+                        det["track_id"] = tid
+                        break
 
             now = datetime.now()
             frames_since_last_seen_update += 1
@@ -448,14 +454,16 @@ def _inference_process_target(
                 frames_since_last_seen_update >= last_seen_update_interval
             )
 
-            for track_id, person_bbox in tracked_person_boxes.items():
+            for track_id, person_bbox in tracked_target_boxes.items():
                 if track_id not in person_history:
                     person_history[track_id] = {
                         "first_seen": now,
                         "last_seen": now,
                     }
-                    if person_class_id is not None:
-                        insert_detection_track(track_id, person_class_id, now, now)
+                    tname = track_det_class.get(track_id)
+                    dcid = detection_class_name_to_id.get(tname) if tname else None
+                    if dcid is not None:
+                        insert_detection_track(track_id, dcid, now, now)
                 else:
                     person_history[track_id]["last_seen"] = now
                     if do_last_seen_db_update:

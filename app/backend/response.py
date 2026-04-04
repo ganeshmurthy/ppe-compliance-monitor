@@ -184,6 +184,7 @@ def postprocess_image(
 def process_detections(
     runtime_detections: list[Detection],
     include_in_counts_by_class_id: dict[int, bool] | None = None,
+    trackable_by_class_id: dict[int, bool] | None = None,
 ) -> tuple[list[dict], defaultdict, list]:
     """
     Convert Detection objects into app format for display and tracking.
@@ -193,18 +194,21 @@ def process_detections(
         include_in_counts_by_class_id: Per model_class_index flag from detection_classes.
             When False, the detection is omitted (no boxes, counts, or tracker input).
             None or missing keys default to True.
+        trackable_by_class_id: Per model_class_index ``trackable`` from detection_classes.
+            When True, the detection is fed to DeepSORT as ``(ltwh, conf, class_name)``.
+            If None, falls back to ``class_name == "Person"`` for tracker input only.
 
     Returns:
         Tuple of:
         - detections: List of dicts with bbox (x1,y1,x2,y2), confidence,
           class_id, class_name.
         - counts: defaultdict of class_name -> count.
-        - person_detections_for_tracker: List of ([left, top, w, h], conf, "Person")
+        - tracker_input: List of ``([left, top, w, h], confidence, class_name)``
           for DeepSORT.
     """
     detections = []
     counts = defaultdict(int)
-    person_detections_for_tracker = []
+    tracker_input = []
 
     for d in runtime_detections:
         if include_in_counts_by_class_id is not None and not (
@@ -225,12 +229,16 @@ def process_detections(
                 "class_name": d.class_name,
             }
         )
-        if d.class_name == "Person" and d.confidence > 0.5:
+        if trackable_by_class_id is not None:
+            is_trackable = trackable_by_class_id.get(d.class_id, False)
+        else:
+            is_trackable = d.class_name == "Person"
+        if is_trackable and d.confidence > 0.5:
             width = x2 - x1
             height = y2 - y1
             if width > 0 and height > 0:
-                person_detections_for_tracker.append(
-                    ([x1, y1, width, height], d.confidence, "Person")
+                tracker_input.append(
+                    ([x1, y1, width, height], d.confidence, d.class_name)
                 )
 
-    return detections, counts, person_detections_for_tracker
+    return detections, counts, tracker_input
