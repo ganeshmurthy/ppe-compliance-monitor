@@ -259,7 +259,7 @@ def main() -> None:
     print("Done.")
     print(f"  Model stem: {stem}")
     print(f"  In the app config, set Model name to: {stem}")
-    print(f"  OVMS gRPC host:port for backend (typical): ovms:8081")
+    print("  OVMS gRPC host:port for backend (typical): ovms:8081")
 
 
 if __name__ == "__main__":

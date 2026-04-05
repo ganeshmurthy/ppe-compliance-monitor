@@ -7,31 +7,31 @@ pip install --no-cache-dir 'git+https://github.com/openai/CLIP.git'
 shopt -s nullglob
 pts=(/source/*.pt)
 if [[ ${#pts[@]} -eq 0 ]]; then
-  echo "ERROR: No .pt files in /source (mount app/models)." >&2
-  exit 1
+	echo "ERROR: No .pt files in /source (mount app/models)." >&2
+	exit 1
 fi
 
 for pt in "${pts[@]}"; do
-  stem=$(basename "$pt" .pt)
-  if [[ "$stem" == "custome_ppe" ]]; then
-    echo "skip (excluded): $stem"
-    continue
-  fi
-  target_dir="/models/${stem}/1"
-  target_xml="${target_dir}/${stem}.xml"
-  if [[ -f "$target_xml" ]]; then
-    echo "skip (exists): $stem"
-    continue
-  fi
-  echo "exporting: $stem"
-  mkdir -p "$target_dir"
-  cp "$pt" "/tmp/${stem}.pt"
-  yolo export "model=/tmp/${stem}.pt" format=openvino task=detect
-  cp "/tmp/${stem}_openvino_model/"*.xml "$target_xml"
-  cp "/tmp/${stem}_openvino_model/"*.bin "${target_dir}/${stem}.bin"
+	stem=$(basename "$pt" .pt)
+	if [[ $stem == "custome_ppe" ]]; then
+		echo "skip (excluded): $stem"
+		continue
+	fi
+	target_dir="/models/${stem}/1"
+	target_xml="${target_dir}/${stem}.xml"
+	if [[ -f $target_xml ]]; then
+		echo "skip (exists): $stem"
+		continue
+	fi
+	echo "exporting: $stem"
+	mkdir -p "$target_dir"
+	cp "$pt" "/tmp/${stem}.pt"
+	yolo export "model=/tmp/${stem}.pt" format=openvino task=detect
+	cp "/tmp/${stem}_openvino_model/"*.xml "$target_xml"
+	cp "/tmp/${stem}_openvino_model/"*.bin "${target_dir}/${stem}.bin"
 done
 
-python3 << 'PY'
+python3 <<'PY'
 import json
 import os
 
