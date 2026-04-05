@@ -157,7 +157,13 @@ Local compose typically sets **`MODEL_INPUT_NAME=x`**, which matches this OVMS e
 
 ### JSON for `POST /api/config` (bird demo)
 
-Create a config with the same fields the Config UI sends. **`classes`** keys are model class indices (strings); each value has **`name`** and **`trackable`**.
+Create a config with the same fields the Config UI sends. **`classes`** keys are model class indices (strings). Each value is an object with:
+
+| Field | Required | Description |
+|--------|----------|-------------|
+| **`name`** | yes | Label for that model class index. |
+| **`trackable`** | yes | Whether that class is used for object tracking (e.g. Person and DeepSORT). |
+| **`include_in_counts`** | no (default **`true`**) | When **`false`**, detections for that class are omitted from bounding boxes, per-class aggregate counts, and tracker input. Omit this field when every class should appear (typical bird demo). |
 
 Example body (OVMS on compose service **`ovms`**, sample video in MinIO **`data`** bucket after seeds / upload job):
 
@@ -190,6 +196,29 @@ curl -sS -X POST "http://localhost:8888/api/config" \
 ```
 
 Updates use the same JSON shape on **`PUT /api/config/<id>`**. Adjust **`video_source`** for your environment (other `s3://` objects, file paths, or RTSP URLs as supported by the backend).
+
+### PPE-style `classes` with `include_in_counts`
+
+Multi-class PPE configs keep every model index in **`classes`** for correct name mapping, but set **`include_in_counts`: `false`** on indices that should not drive overlays or summaries (e.g. safety cones, vest, machinery, vehicle). Indices without **`include_in_counts`** default to **`true`**.
+
+Only **`classes`** is shown below; use the same top-level fields (**`model_url`**, **`model_name`**, **`video_source`**, etc.) as in the bird example.
+
+```json
+{
+  "classes": {
+    "0": { "name": "Hardhat", "trackable": false },
+    "1": { "name": "Mask", "trackable": false },
+    "2": { "name": "NO-Hardhat", "trackable": false },
+    "3": { "name": "NO-Mask", "trackable": false },
+    "4": { "name": "NO-Safety Vest", "trackable": false },
+    "5": { "name": "Person", "trackable": true },
+    "6": { "name": "Safety Cone", "trackable": false, "include_in_counts": false },
+    "7": { "name": "Safety Vest", "trackable": false, "include_in_counts": false },
+    "8": { "name": "machinery", "trackable": false, "include_in_counts": false },
+    "9": { "name": "vehicle", "trackable": false, "include_in_counts": false }
+  }
+}
+```
 
 ---
 

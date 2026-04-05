@@ -79,13 +79,13 @@ def _get_or_create_person_class_id() -> int:
         replace_detection_classes(
             config_id,
             [
-                (0, "Person", True),
-                (1, "Hardhat", False),
-                (2, "NO-Hardhat", False),
-                (3, "Safety Vest", False),
-                (4, "NO-Safety Vest", False),
-                (5, "Mask", False),
-                (6, "NO-Mask", False),
+                (0, "Person", True, True),
+                (1, "Hardhat", False, True),
+                (2, "NO-Hardhat", False, True),
+                (3, "Safety Vest", False, True),
+                (4, "NO-Safety Vest", False, True),
+                (5, "Mask", False, True),
+                (6, "NO-Mask", False, True),
             ],
         )
         configs = get_all_configs()
@@ -95,13 +95,13 @@ def _get_or_create_person_class_id() -> int:
         replace_detection_classes(
             config["id"],
             [
-                (0, "Person", True),
-                (1, "Hardhat", False),
-                (2, "NO-Hardhat", False),
-                (3, "Safety Vest", False),
-                (4, "NO-Safety Vest", False),
-                (5, "Mask", False),
-                (6, "NO-Mask", False),
+                (0, "Person", True, True),
+                (1, "Hardhat", False, True),
+                (2, "NO-Hardhat", False, True),
+                (3, "Safety Vest", False, True),
+                (4, "NO-Safety Vest", False, True),
+                (5, "Mask", False, True),
+                (6, "NO-Mask", False, True),
             ],
         )
         person = get_detection_class_by_name_and_config("Person", config["id"])

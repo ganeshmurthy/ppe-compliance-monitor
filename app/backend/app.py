@@ -314,12 +314,13 @@ def chat():
     return jsonify({"answer": answer})
 
 
-def _parse_classes(value: str | dict) -> tuple[dict, list[tuple[int, str, bool]]]:
+def _parse_classes(value: str | dict) -> tuple[dict, list[tuple[int, str, bool, bool]]]:
     """
     Parse classes from new JSON format. Returns (mapping, entries).
-    Format: {"0":{"name":"Person","trackable":true},"1":{"name":"Hardhat","trackable":false}}
+    Format: {"0":{"name":"Person","trackable":true,"include_in_counts":true}, ...}
+    include_in_counts defaults to true when omitted.
     mapping: {"0":"Person","1":"Hardhat"} for app_config.classes
-    entries: [(model_class_index, name, trackable), ...] for detection_classes
+    entries: [(model_class_index, name, trackable, include_in_counts), ...]
     """
     if value is None:
         raise ValueError("Classes cannot be empty")
@@ -342,12 +343,13 @@ def _parse_classes(value: str | dict) -> tuple[dict, list[tuple[int, str, bool]]
             raise ValueError(f'Class "{idx_str}" must have a non-empty "name"')
         name = str(name).strip()
         trackable = bool(v.get("trackable", False))
+        include_in_counts = bool(v.get("include_in_counts", True))
         try:
             model_class_index = int(idx_str)
         except ValueError:
             raise ValueError(f'Class key "{idx_str}" must be an integer (model index)')
         mapping[idx_str] = name
-        entries.append((model_class_index, name, trackable))
+        entries.append((model_class_index, name, trackable, include_in_counts))
     return mapping, entries
 
 
