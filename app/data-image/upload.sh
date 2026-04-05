@@ -42,7 +42,7 @@ elif [ "$RUNTIME_TYPE" = "kserve" ]; then
 	for d in /upload/models/*-onnx/; do
 		[ -d "$d" ] || continue
 		base=$(basename "$d")
-		stem=$(echo "$base" | sed 's/-onnx$//')
+		stem=${base%-onnx}
 		onnx_path="${d}${stem}/1/model.onnx"
 		if [ ! -f "$onnx_path" ]; then
 			continue

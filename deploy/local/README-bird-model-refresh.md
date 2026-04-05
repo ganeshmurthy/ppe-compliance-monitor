@@ -155,6 +155,42 @@ Example for **`bird.pt`**:
 
 Local compose typically sets **`MODEL_INPUT_NAME=x`**, which matches this OVMS export path.
 
+### JSON for `POST /api/config` (bird demo)
+
+Create a config with the same fields the Config UI sends. **`classes`** keys are model class indices (strings); each value has **`name`** and **`trackable`**.
+
+Example body (OVMS on compose service **`ovms`**, sample video in MinIO **`data`** bucket after seeds / upload job):
+
+```json
+{
+  "model_url": "ovms:8081",
+  "model_name": "bird",
+  "video_source": "s3://data/bluejayclear.mp4",
+  "classes": {
+    "0": { "name": "Bluejays", "trackable": true },
+    "1": { "name": "Cardinals", "trackable": true }
+  }
+}
+```
+
+Example **`curl`** (replace host/port if needed):
+
+```bash
+curl -sS -X POST "http://localhost:8888/api/config" \
+  -H "Content-Type: application/json" \
+  -d '{
+  "model_url": "ovms:8081",
+  "model_name": "bird",
+  "video_source": "s3://data/bluejayclear.mp4",
+  "classes": {
+    "0": {"name": "Bluejays", "trackable": true},
+    "1": {"name": "Cardinals", "trackable": true}
+  }
+}'
+```
+
+Updates use the same JSON shape on **`PUT /api/config/<id>`**. Adjust **`video_source`** for your environment (other `s3://` objects, file paths, or RTSP URLs as supported by the backend).
+
 ---
 
 ## Notes

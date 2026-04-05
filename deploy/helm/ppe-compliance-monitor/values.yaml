@@ -98,7 +98,7 @@ labelStudio:
     chartName: ppe-compliance-monitor
   replicas: 1
   image:
-    repository: heartexlabs/label-studio
+    repository: docker.io/heartexlabs/label-studio
     tag: latest
     pullPolicy: IfNotPresent
   resources:

@@ -65,7 +65,7 @@ services:
 
   # Label Studio annotation UI (uses the same PostgreSQL and MinIO services)
   labelstudio:
-    image: heartexlabs/label-studio:latest
+    image: docker.io/heartexlabs/label-studio:latest
     container_name: labelstudio
     depends_on:
       postgresql:
