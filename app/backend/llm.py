@@ -25,6 +25,8 @@ SYSTEM_PROMPT = (
     "first_seen TIMESTAMP, last_seen TIMESTAMP)\n"
     "  detection_observations(id SERIAL PK, track_id INTEGER FK→detection_tracks, "
     "timestamp TIMESTAMP, attributes JSONB)\n"
+    "  FK chain uses ON DELETE CASCADE: deleting an app_config row removes its classes, "
+    "tracks, and observations. Configs are add-only via API (no in-place update).\n"
     "  For PPE: join detection_tracks to detection_classes where name='Person' (trackable). "
     "attributes has hardhat, vest, mask (true/false). "
     "A 'violation' means (attributes->>'hardhat')::boolean = false, etc. "

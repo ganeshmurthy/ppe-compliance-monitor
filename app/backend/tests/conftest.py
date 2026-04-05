@@ -17,8 +17,8 @@ def db_setup():
 
 @pytest.fixture(autouse=True)
 def clean_db():
-    """Truncate all data before every test (respecting FK order)."""
+    """Truncate all data before every test (FK cascade from app_config)."""
     with get_connection() as conn:
         cur = conn.cursor()
-        cur.execute("TRUNCATE detection_observations, detection_tracks CASCADE")
+        cur.execute("TRUNCATE app_config RESTART IDENTITY CASCADE")
         conn.commit()

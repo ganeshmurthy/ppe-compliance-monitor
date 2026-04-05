@@ -843,6 +843,55 @@ class MultiModalAIDemo:
         self._start_frame_reader()
         self._streaming_started = True
 
+    def stop_streaming_if_active_config(self, config_id: int) -> None:
+        """If this config is the active stream, stop reader and inference and clear active id."""
+        if self._active_config_id != config_id:
+            return
+        log.info(f"Stopping stream: active config {config_id} was deleted")
+        self._stream_epoch += 1
+        if self._results_queue is not None:
+            while True:
+                try:
+                    self._results_queue.get_nowait()
+                except queue.Empty:
+                    break
+        self._stop_frame_reader()
+        if self.cap is not None:
+            try:
+                self.cap.release()
+            except Exception:
+                pass
+            self.cap = None
+        if self._s3_temp_path:
+            try:
+                os.unlink(self._s3_temp_path)
+            except OSError:
+                pass
+            self._s3_temp_path = None
+        self.video_source = None
+        self._stop_inference_process(quick=True)
+        if self._config_queue is not None:
+            while True:
+                try:
+                    self._config_queue.get_nowait()
+                except queue.Empty:
+                    break
+        self._shm_initialized = False
+        if self._shm is not None:
+            try:
+                self._shm.close()
+                self._shm.unlink()
+            except Exception:
+                pass
+            self._shm = None
+        with self._display_lock:
+            self._active_config_id = None
+            self._display_detections = []
+            self._display_description = ""
+            self._display_summary = ""
+            self._results_received_count = 0
+        self._streaming_started = False
+
     def _stop_inference_process(self, quick=False):
         """Stop the inference process if running.
         quick=True: short timeout then terminate (for source switching - don't wait for inference).
