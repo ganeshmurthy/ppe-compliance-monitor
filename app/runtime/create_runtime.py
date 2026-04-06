@@ -55,8 +55,11 @@ def load_config():
         "model_registry_url": os.getenv("MODEL_REGISTRY_URL", ""),
         "model_name": os.getenv("MODEL_NAME", "ppe"),
         "model_version": os.getenv("MODEL_VERSION", "1"),
+        "multi_model_serving": os.getenv("MULTI_MODEL_SERVING", "false").lower()
+        == "true",
+        "inference_service_name": os.getenv("INFERENCE_SERVICE_NAME", "").strip(),
         "s3_bucket": os.getenv("S3_BUCKET", "models"),
-        "s3_model_path": os.getenv("S3_MODEL_PATH", "ppe/"),
+        "s3_model_path": os.getenv("S3_MODEL_PATH", "ovms/ppe"),
         "minio_endpoint": os.getenv(
             "MINIO_ENDPOINT", f"http://minio.{namespace}.svc.cluster.local:9000"
         ),
@@ -307,17 +310,12 @@ def create_service_account(core_v1, cfg):
 
 def _build_ovms_args(cfg):
     """Build OVMS container args optimized for low-concurrency REST inference."""
-    # num_cpus = _parse_cpu_value(cfg["resources"]["limits"]["cpu"])
     plugin_config = json.dumps(
         {
             "PERFORMANCE_HINT": "THROUGHPUT",
         }
     )
-    return [
-        "--model_name={{.Name}}",
-        f"--port={cfg['grpc_port']}",
-        f"--rest_port={cfg['rest_port']}",
-        "--model_path=/mnt/models",
+    common_tail = [
         "--file_system_poll_wait_seconds=0",
         "--metrics_enable",
         "--nireq=2",
@@ -325,7 +323,20 @@ def _build_ovms_args(cfg):
         "--rest_bind_address=0.0.0.0",
         "--cache_dir=/tmp/ovms_cache",
         f"--plugin_config={plugin_config}",
-        # f"--rest_workers={max(num_cpus, 4)}",
+    ]
+    if cfg.get("multi_model_serving") and cfg["runtime_type"] == "openvino":
+        return [
+            "--config_path=/mnt/models/config.json",
+            f"--port={cfg['grpc_port']}",
+            f"--rest_port={cfg['rest_port']}",
+            *common_tail,
+        ]
+    return [
+        "--model_name={{.Name}}",
+        f"--port={cfg['grpc_port']}",
+        f"--rest_port={cfg['rest_port']}",
+        "--model_path=/mnt/models",
+        *common_tail,
     ]
 
 
@@ -372,7 +383,7 @@ def build_serving_runtime_spec(cfg):
                     ],
                 }
             ],
-            "multiModel": False,
+            "multiModel": cfg.get("multi_model_serving", False),
             "protocolVersions": ["v2", "grpc-v2"],
             "supportedModelFormats": [
                 {"name": "openvino_ir", "version": "opset13", "autoSelect": True},
@@ -387,8 +398,8 @@ def build_serving_runtime_spec(cfg):
 
 
 def _build_triton_args(cfg):
-    """Build Triton Inference Server container args for KServe single-model serving."""
-    return [
+    """Build Triton Inference Server container args for KServe (single- or multi-model store)."""
+    args = [
         "tritonserver",
         "--model-store=/mnt/models",
         f"--http-port={cfg['rest_port']}",
@@ -396,6 +407,11 @@ def _build_triton_args(cfg):
         "--allow-http=true",
         "--allow-grpc=true",
     ]
+    if cfg["runtime_type"] == "kserve":
+        # Multiple model dirs live under /mnt/models (e.g. ppe/, bird/). Without this, optional
+        # fields in config.pbtxt are errors; bird often loads via autogen while ppe can fail.
+        args.append("--strict-model-config=false")
+    return args
 
 
 def build_kserve_serving_runtime_spec(cfg):
@@ -454,7 +470,7 @@ def build_kserve_serving_runtime_spec(cfg):
                 "prometheus.io/port": str(cfg["rest_port"]),
             },
             "containers": [container],
-            "multiModel": False,
+            "multiModel": cfg.get("multi_model_serving", False),
             "protocolVersions": ["v2", "grpc-v2"],
             "volumes": [
                 {"name": "shm", "emptyDir": {"medium": "Memory", "sizeLimit": "2Gi"}},
@@ -504,14 +520,24 @@ def create_serving_runtime(custom_api, cfg):
     )
 
 
+def _inference_service_k8s_name(cfg) -> str:
+    """KServe resource name; multi-model uses a fixed ISVC (shared URL for all logical models)."""
+    explicit = (cfg.get("inference_service_name") or "").strip()
+    if explicit:
+        return explicit
+    return cfg["model_name"]
+
+
 def build_inference_service_spec(cfg, model_info, sa_name):
     """Build the InferenceService specification.
 
     Uses storage.key (namespace) + storage.path pattern matching the Helm
-    template, with RawDeployment mode and OpenDataHub annotations.
+    template (path is the MinIO prefix; KServe maps it under /mnt/models with
+    this prefix stripped—use triton/ not triton/<model> for Triton repos).
+    RawDeployment mode and OpenDataHub annotations.
     When GPU is enabled, adds nvidia.com/gpu resources and node tolerations.
     """
-    isvc_name = cfg["model_name"]
+    isvc_name = _inference_service_k8s_name(cfg)
 
     resources = cfg["resources"]
     if cfg.get("gpu_enabled"):
@@ -657,9 +683,11 @@ def deploy():
     print(f"  Runtime Type: {cfg['runtime_type']}")
     print(f"  Model: {model_info['model_name']}")
     print(f"  Version: {model_info['model_version']}")
+    print(f"  Multi-model serving: {cfg.get('multi_model_serving', False)}")
+    print(f"  InferenceService name: {_inference_service_k8s_name(cfg)}")
     print(f"  Namespace: {cfg['namespace']}")
     print(f"  Bucket: {model_info['bucket']}")
-    print(f"  Model Path: {model_info['model_path']}")
+    print(f"  Model Path: {model_info['model_path']!r}")
     print(f"  Serving Runtime: {cfg['serving_runtime']}")
     print(f"  Runtime Image: {cfg['runtime_image']}")
     print(f"  Model Format: {cfg['model_format']} v{cfg['model_format_version']}")

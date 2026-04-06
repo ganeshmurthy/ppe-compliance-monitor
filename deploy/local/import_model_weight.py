@@ -4,7 +4,7 @@ Import or refresh a YOLO .pt weight for local Podman + OVMS (deploy/local/podman
 
 Copies the weight into app/models/<stem>.pt if needed, then either:
   - first time for <stem>: run yolo-model-prep only (no cache delete), or
-  - replacement: remove /models/<stem> on model_repo, then run prep again.
+  - replacement: remove /models/ovms/<stem> on model_repo, then run prep again.
 
 Usage:
   python deploy/local/import_model_weight.py bird.pt
@@ -104,7 +104,7 @@ def run(
 
 def volume_has_export(volume: str, stem: str) -> bool:
     """True if OpenVINO IR for stem already exists on model_repo."""
-    xml = f"/models/{stem}/1/{stem}.xml"
+    xml = f"/models/ovms/{stem}/1/{stem}.xml"
     r = subprocess.run(
         [
             "podman",
@@ -133,7 +133,7 @@ def clear_stem_on_volume(volume: str, stem: str) -> None:
             "docker.io/library/alpine:3.19",
             "sh",
             "-c",
-            f"rm -rf /models/{stem} && ls /models",
+            f"rm -rf /models/ovms/{stem} && ls /models",
         ]
     )
 
@@ -227,7 +227,7 @@ def main() -> None:
 
     if volume_has_export(volume, stem):
         print(f"Existing OpenVINO export found for “{stem}” — treating as replacement.")
-        print(f"Removing /models/{stem} on volume {volume} …")
+        print(f"Removing /models/ovms/{stem} on volume {volume} …")
         clear_stem_on_volume(volume, stem)
     else:
         print(f"No export yet for “{stem}” on volume {volume} — first-time import.")
@@ -239,7 +239,7 @@ def main() -> None:
         cwd=compose_file.parent,
     )
 
-    # Reload OVMS with updated /models/config.json
+    # Reload OVMS with updated /models/ovms/config.json
     pr = subprocess.run(
         [*cbase, "ps", "-q", "ovms"],
         cwd=compose_file.parent,

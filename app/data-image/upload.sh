@@ -22,43 +22,45 @@ RUNTIME_TYPE="${RUNTIME_TYPE}"
 echo "Runtime type: ${RUNTIME_TYPE}"
 
 if [ "$RUNTIME_TYPE" = "openvino" ]; then
-	echo "Checking / uploading OpenVINO model trees..."
-	for d in /upload/models/*/; do
+	echo "Checking / uploading OpenVINO model trees (ovms/<model>/1/)..."
+	for d in /upload/models/ovms/*/; do
 		[ -d "$d" ] || continue
 		base=$(basename "$d")
 		case "$base" in *-onnx) continue ;; esac
 		if [ ! -f "${d}1/${base}.xml" ]; then
 			continue
 		fi
-		if ! mc stat "myminio/models/${base}/1/${base}.xml" >/dev/null 2>&1; then
-			echo "Uploading OpenVINO model: ${base}/"
-			mc cp --recursive "$d" "myminio/models/${base}/"
+		if ! mc stat "myminio/models/ovms/${base}/1/${base}.xml" >/dev/null 2>&1; then
+			echo "Uploading OpenVINO model: ovms/${base}/"
+			mc cp --recursive "$d" "myminio/models/ovms/${base}/"
 		else
-			echo "OpenVINO ${base} already present, skipping"
+			echo "OpenVINO ovms/${base} already present, skipping"
 		fi
 	done
+	if [ -f /upload/models/ovms/config.json ]; then
+		echo "Uploading OpenVINO config.json (multi-model OVMS)..."
+		mc cp /upload/models/ovms/config.json myminio/models/ovms/config.json
+	fi
 elif [ "$RUNTIME_TYPE" = "kserve" ]; then
-	echo "Checking / uploading ONNX model trees..."
-	for d in /upload/models/*-onnx/; do
+	echo "Checking / uploading Triton ONNX model trees (triton/<model>/1/model.onnx)..."
+	for d in /upload/models/triton/*/; do
 		[ -d "$d" ] || continue
-		base=$(basename "$d")
-		stem=${base%-onnx}
-		onnx_path="${d}${stem}/1/model.onnx"
+		stem=$(basename "$d")
+		onnx_path="${d}1/model.onnx"
 		if [ ! -f "$onnx_path" ]; then
 			continue
 		fi
-		if ! mc stat "myminio/models/${base}/${stem}/1/model.onnx" >/dev/null 2>&1; then
-			echo "Uploading ONNX model: ${base}/"
-			mc cp --recursive "$d" "myminio/models/${base}/"
+		if ! mc stat "myminio/models/triton/${stem}/1/model.onnx" >/dev/null 2>&1; then
+			echo "Uploading Triton ONNX model: triton/${stem}/"
+			mc cp --recursive "$d" "myminio/models/triton/${stem}/"
 		else
-			echo "ONNX ${base} already present, skipping"
+			echo "Triton ONNX ${stem} already present, skipping"
 		fi
 	done
-	# Optional Triton config (GPU / TensorRT); repo default matches ppe-onnx layout
-	if [ -f /upload/triton-config/config.pbtxt ] &&
-		mc stat "myminio/models/ppe-onnx/ppe/1/model.onnx" >/dev/null 2>&1; then
-		echo "Uploading Triton config for ppe-onnx/ppe..."
-		mc cp /upload/triton-config/config.pbtxt "myminio/models/ppe-onnx/ppe/config.pbtxt"
+	# Optional Triton config (GPU / TensorRT); repo template targets ppe I/O shape only—do not copy to other stems.
+	if [ -f /upload/triton-config/config.pbtxt ] && [ -f /upload/models/triton/ppe/1/model.onnx ]; then
+		echo "Uploading Triton config for triton/ppe/..."
+		mc cp /upload/triton-config/config.pbtxt myminio/models/triton/ppe/config.pbtxt
 	fi
 else
 	echo "ERROR: Unknown RUNTIME_TYPE '${RUNTIME_TYPE}'. Expected 'openvino' or 'kserve'."
@@ -77,14 +79,16 @@ for f in /upload/models-pt/*.pt; do
 	fi
 done
 
-echo "Checking video file..."
-if ! mc stat myminio/data/combined-video-no-gap-rooftop.mp4 >/dev/null 2>&1; then
-	echo "Uploading video (combined-video-no-gap-rooftop.mp4)..."
-	mc cp /upload/data/combined-video-no-gap-rooftop.mp4 myminio/data/
-	echo "Video uploaded successfully"
-else
-	echo "Video already exists, skipping"
-fi
+echo "Checking sample videos in data bucket..."
+for vid in combined-video-no-gap-rooftop.mp4 bluejayclear.mp4; do
+	if ! mc stat "myminio/data/${vid}" >/dev/null 2>&1; then
+		echo "Uploading video (${vid})..."
+		mc cp "/upload/data/${vid}" myminio/data/
+		echo "Uploaded ${vid}"
+	else
+		echo "${vid} already in bucket, skipping"
+	fi
+done
 
 echo "=== Data upload complete ==="
 

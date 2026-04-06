@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Export each /source/*.pt to OpenVINO under /models/<stem>/1/ and write OVMS config.json
+# Export each /source/*.pt to OpenVINO under /models/ovms/<name>/1/ and write /models/ovms/config.json
 set -euo pipefail
 
 pip install --no-cache-dir 'git+https://github.com/openai/CLIP.git'
@@ -17,7 +17,7 @@ for pt in "${pts[@]}"; do
 		echo "skip (excluded): $stem"
 		continue
 	fi
-	target_dir="/models/${stem}/1"
+	target_dir="/models/ovms/${stem}/1"
 	target_xml="${target_dir}/${stem}.xml"
 	if [[ -f $target_xml ]]; then
 		echo "skip (exists): $stem"
@@ -35,7 +35,8 @@ python3 <<'PY'
 import json
 import os
 
-root = "/models"
+root = "/models/ovms"
+os.makedirs(root, exist_ok=True)
 entries = []
 for name in sorted(os.listdir(root)):
     path = os.path.join(root, name)
@@ -44,7 +45,7 @@ for name in sorted(os.listdir(root)):
     xml = os.path.join(path, "1", f"{name}.xml")
     if os.path.isfile(xml):
         entries.append(
-            {"config": {"name": name, "base_path": f"/models/{name}"}}
+            {"config": {"name": name, "base_path": f"/models/ovms/{name}"}}
         )
 
 cfg = {"model_config_list": entries}
@@ -53,7 +54,7 @@ with open(out, "w", encoding="utf-8") as f:
     json.dump(cfg, f, indent=2)
 print(f"Wrote {out} with {len(entries)} model(s): {[e['config']['name'] for e in entries]}")
 if not entries:
-    raise SystemExit("No models found under /models — export failed?")
+    raise SystemExit("No models found under /models/ovms — export failed?")
 PY
 
 echo "yolo-model-prep: complete"

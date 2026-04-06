@@ -143,11 +143,20 @@ spec:
               value: "true"
             - name: S3_BUCKET
               value: {{ index .Values.minio.bucketCreation.buckets 0 | quote }}
-            {{- if eq .Values.modelServing.runtimeType "kserve" }}
+            {{- if or (and (eq .Values.modelServing.runtimeType "openvino") .Values.modelServing.openvino.multiModel) (and (eq .Values.modelServing.runtimeType "kserve") .Values.modelServing.kserve.multiModel) }}
+            - name: MULTI_MODEL_SERVING
+              value: "true"
+            - name: INFERENCE_SERVICE_NAME
+              value: {{ .Values.runtimeDeployer.inferenceServiceName | quote }}
+            {{- end }}
             - name: S3_MODEL_PATH
+            {{- if and (eq .Values.modelServing.runtimeType "openvino") .Values.modelServing.openvino.multiModel }}
+              value: {{ .Values.modelServing.openvino.multiModelStoragePath | quote }}
+            {{- else if and (eq .Values.modelServing.runtimeType "kserve") .Values.modelServing.kserve.multiModel }}
+              value: {{ .Values.modelServing.kserve.multiModelStoragePath | quote }}
+            {{- else if eq .Values.modelServing.runtimeType "kserve" }}
               value: {{ .Values.modelServing.kserve.modelPath | quote }}
             {{- else }}
-            - name: S3_MODEL_PATH
               value: {{ .Values.modelServing.openvino.modelPath | quote }}
             {{- end }}
             - name: MINIO_ENDPOINT

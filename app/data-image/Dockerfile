@@ -20,6 +20,9 @@ WORKDIR /extract
 COPY data/combined-video-no-gap-rooftop.mp4.7z.* ./data/
 RUN cd data && 7z x combined-video-no-gap-rooftop.mp4.7z.001
 
+# Sample MP4 for bird demo (same bucket as rooftop clip; see upload.sh)
+COPY data/bluejayclear.mp4 ./data/
+
 COPY models /extract/models/
 
 # Stage 2: Export each *.pt to OpenVINO IR + ONNX
@@ -37,8 +40,10 @@ FROM docker.io/minio/mc:latest
 WORKDIR /upload
 
 COPY --from=extractor /extract/data/combined-video-no-gap-rooftop.mp4 /upload/data/
+COPY --from=extractor /extract/data/bluejayclear.mp4 /upload/data/
 COPY --from=extractor /extract/models /upload/models-pt/
 COPY --from=exporter /exported-openvino/ /upload/models/
+# ONNX for Triton: triton/<name>/1/model.onnx; OpenVINO IR: ovms/<name>/1/
 COPY --from=exporter /exported-onnx/ /upload/models/
 COPY data-image/config/config.pbtxt /upload/triton-config/config.pbtxt
 COPY data-image/upload.sh /upload/upload.sh

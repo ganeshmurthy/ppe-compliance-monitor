@@ -27,13 +27,29 @@ spec:
             - /bin/sh
             - -c
             - |
+              set -e
               export MC_CONFIG_DIR=/tmp/.mc
-              until mc alias set myminio "http://{{ .Values.minio.secret.host }}:{{ .Values.minio.secret.port }}" "{{ .Values.minio.secret.user }}" "{{ .Values.minio.secret.password }}" 2>/dev/null; do
-                echo "MinIO not ready, retrying..."
+              SRC="myminio/{{ .Values.storage.video.bucket }}/{{ .Values.storage.video.key }}"
+              echo "[download-video] MINIO_ENDPOINT=${MINIO_ENDPOINT}"
+              echo "[download-video] source object: ${SRC}"
+              until mc alias set myminio "${MINIO_ENDPOINT}" "{{ .Values.minio.secret.user }}" "{{ .Values.minio.secret.password }}"; do
+                echo "[download-video] mc alias set failed (see error above); retrying in 2s..."
                 sleep 2
               done
-              mc cp myminio/{{ .Values.storage.video.bucket }}/{{ .Values.storage.video.key }} /data/video.mp4
-              echo "Video downloaded"
+              echo "[download-video] mc alias OK"
+              if ! mc stat "${SRC}"; then
+                echo "[download-video] mc stat failed — bucket/key missing, wrong credentials, or MinIO unreachable"
+                exit 1
+              fi
+              echo "[download-video] copying to /data/video.mp4"
+              mc cp "${SRC}" /data/video.mp4
+              echo "[download-video] /data after copy:"
+              ls -la /data || true
+              if [ ! -s /data/video.mp4 ]; then
+                echo "[download-video] ERROR: /data/video.mp4 missing or empty after mc cp"
+                exit 1
+              fi
+              echo "[download-video] ok size_bytes=$(wc -c </data/video.mp4)"
           env:
             - name: MINIO_ENDPOINT
               value: "http://{{ .Values.minio.secret.host }}:{{ .Values.minio.secret.port }}"
@@ -54,10 +70,24 @@ spec:
         - name: ffmpeg
           image: docker.io/linuxserver/ffmpeg:latest
           imagePullPolicy: IfNotPresent
+          env:
+            - name: VIDEO_SRC_HINT
+              value: "{{ .Values.storage.video.bucket }}/{{ .Values.storage.video.key }} (init uses mc cp from MinIO)"
           command:
             - /bin/sh
             - -c
             - |
+              echo "[ffmpeg] listing /data (from download-video init):"
+              ls -la /data 2>&1 || true
+              if [ ! -f /data/video.mp4 ]; then
+                echo "[ffmpeg] ERROR: /data/video.mp4 not found — check download-video init logs and MinIO object ${VIDEO_SRC_HINT:-}"
+                exit 1
+              fi
+              if [ ! -s /data/video.mp4 ]; then
+                echo "[ffmpeg] ERROR: /data/video.mp4 is empty"
+                exit 1
+              fi
+              stat /data/video.mp4 2>&1 || true
               echo "Waiting for MediaMTX to start..."
               sleep 5
               echo "Starting FFmpeg stream"

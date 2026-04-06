@@ -9,6 +9,7 @@ backend:
     repository: quay.io/rh-ai-quickstart/ppe-compliance-monitor-backend
     tag: latest
     pullPolicy: Always
+  # Example predictor URL; when runtimeDeployer + openvino.multiModel, use the multi-model ISVC (e.g. multi-model-serving-predictor).
   serviceUrl: "http://ppe-predictor.svc.cluster.local:8888"
   modelInputName: "x"
   modelVersion: "1"
@@ -160,6 +161,8 @@ runtimeDeployer:
   enabled: true
   # Default OVMS model id for cluster bootstrap (backend uses app_config.model_name per config).
   modelName: "ppe"
+  # Inference(SVC) metadata.name when modelServing.openvino.multiModel or kserve.multiModel is true.
+  inferenceServiceName: "multi-model-serving"
   image:
     repository: quay.io/rh-ai-quickstart/ppe-compliance-monitor-runtime
     tag: latest
@@ -192,7 +195,11 @@ modelServing:
     modelFormat:
       name: pytorch
       version: "2"
-    modelPath: ppe
+    # Single model: ovms/<model_name> (matches Triton-style triton/<model_name>); logical OVMS name is still model_name (e.g. ppe).
+    modelPath: ovms/ppe
+    # Multi-model: sync prefix ovms/ (IR trees + ovms/config.json); OVMS --config_path=/mnt/models/config.json
+    multiModel: false
+    multiModelStoragePath: ovms
   # KServe-native runtime config (used when runtimeType=kserve)
   # NVIDIA Triton Inference Server -- GPU-accelerated ONNX serving via V2/OIP REST
   kserve:
@@ -212,7 +219,12 @@ modelServing:
     modelFormat:
       name: onnx
       version: "1"
-    modelPath: ppe-onnx
+    # Single model: MinIO prefix must be triton/ (not triton/<stem>): KServe strips storage.path under /mnt/models, so
+    # triton/ppe yielded .../1/model.onnx (invalid model name "1"); triton yields .../ppe/1/model.onnx. runtimeDeployer.modelName must match <stem> (e.g. ppe).
+    modelPath: triton
+    # Multi-model: same parent prefix triton/ (see multiModelStoragePath). Triton trees: triton/<stem>/1/model.onnx; --strict-model-config=false.
+    multiModel: false
+    multiModelStoragePath: triton
     modelInputName: images
     templateName: kserve-tritonserver
     templateDisplayName: "NVIDIA Triton Inference Server"

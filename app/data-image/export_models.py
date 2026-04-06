@@ -8,6 +8,7 @@ Run after: pip install git+https://github.com/openai/CLIP.git
 from __future__ import annotations
 
 import glob
+import json
 import os
 import shutil
 import subprocess
@@ -21,6 +22,42 @@ EXCLUDE_STEMS = frozenset(
     for s in os.environ.get("EXPORT_EXCLUDE_STEMS", "custome_ppe").split(",")
     if s.strip()
 )
+
+# OVMS on OpenShift mounts the models bucket at /mnt/models; must match create_runtime.py.
+OVMS_MOUNT_BASE = os.environ.get("OVMS_CLUSTER_MOUNT_BASE", "/mnt/models")
+
+
+def write_ovms_config_json(root: str, mount_base: str = OVMS_MOUNT_BASE) -> None:
+    """Emit OVMS multi-model config.json under ovms/ (ISVC storage path prefix = ovms)."""
+    entries: list[dict] = []
+    ovms_dir = os.path.join(root, "ovms")
+    if not os.path.isdir(ovms_dir):
+        print("warning: skipping config.json (no ovms/ export dir)", file=sys.stderr)
+        return
+    for name in sorted(os.listdir(ovms_dir)):
+        path = os.path.join(ovms_dir, name)
+        if not os.path.isdir(path) or name.startswith("."):
+            continue
+        if name.endswith("-onnx"):
+            continue
+        xml = os.path.join(path, "1", f"{name}.xml")
+        if os.path.isfile(xml):
+            entries.append(
+                {
+                    "config": {
+                        "name": name,
+                        "base_path": f"{mount_base.rstrip('/')}/{name}",
+                    }
+                }
+            )
+    if not entries:
+        print("warning: skipping config.json (no OpenVINO model dirs)", file=sys.stderr)
+        return
+    cfg = {"model_config_list": entries}
+    out = os.path.join(ovms_dir, "config.json")
+    with open(out, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2)
+    print(f"wrote {out} with {len(entries)} openvino model(s)")
 
 
 def main() -> None:
@@ -38,7 +75,7 @@ def main() -> None:
             print(f"skip (excluded): {stem}")
             continue
 
-        d_ov = os.path.join(OUT_OPENVINO, stem, "1")
+        d_ov = os.path.join(OUT_OPENVINO, "ovms", stem, "1")
         xml_path = os.path.join(d_ov, f"{stem}.xml")
         if os.path.isfile(xml_path):
             print(f"skip (exists): {stem}")
@@ -63,12 +100,14 @@ def main() -> None:
             ["yolo", "export", f"model={tmp_pt}", "format=onnx", "task=detect"],
             check=True,
         )
-        d_onx = os.path.join(OUT_ONNX, f"{stem}-onnx", stem, "1")
+        # Triton layout: triton/<stem>/1/model.onnx (IR lives under ovms/<stem>/1/).
+        d_onx = os.path.join(OUT_ONNX, "triton", stem, "1")
         os.makedirs(d_onx, exist_ok=True)
         onnx_src = f"/tmp/{stem}.onnx"
         shutil.copy(onnx_src, os.path.join(d_onx, "model.onnx"))
         print(f"exported: {stem}")
 
+    write_ovms_config_json(OUT_OPENVINO)
     print("export_models: done")
 
 

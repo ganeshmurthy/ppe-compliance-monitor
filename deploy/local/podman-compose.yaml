@@ -228,7 +228,7 @@ services:
     ports:
       - "3000:3000"
 
-  # Export each app/models/*.pt → /models/<stem>/1/*.xml + config.json for OVMS
+  # Export each app/models/*.pt → /models/ovms/<name>/1/*.xml + ovms/config.json for OVMS
   yolo-model-prep:
     image: docker.io/ultralytics/ultralytics:latest-cpu
     volumes:
@@ -248,7 +248,7 @@ services:
     restart: on-failure
     command:
       - --config_path
-      - /models/config.json
+      - /models/ovms/config.json
       - --port
       - "8081"
       - --rest_port
