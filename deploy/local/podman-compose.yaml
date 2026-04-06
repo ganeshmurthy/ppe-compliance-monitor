@@ -182,6 +182,8 @@ services:
       OPENAI_TEMPERATURE: "${OPENAI_TEMPERATURE:-0.7}"
       # Config storage: MinIO (enables horizontal scaling)
       CONFIG_BUCKET: config
+      DEFAULT_OVMS_MODEL_URL: "ovms:8081"
+      MINIO_VIDEO_BUCKET: "data"
     ports:
       - "8888:8888"
     networks:

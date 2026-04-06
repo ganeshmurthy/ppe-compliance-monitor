@@ -108,7 +108,7 @@ def _predictions_matrix(raw: np.ndarray, nc: int) -> np.ndarray:
     else:
         log.warning(
             "YOLO layout ambiguous shape=%s expected feat_dim=%d; "
-            "using short-axis-as-features heuristic (verify with diagnose_yolo_inference.py)",
+            "using short-axis-as-features heuristic — check OVMS tensor layout vs model export",
             x.shape,
             feat,
         )
