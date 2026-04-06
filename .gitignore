@@ -41,7 +41,7 @@ custome_ppe.pt
 # YOLO training outputs (when running notebook locally)
 runs/
 yolo_dataset/
-yolov8n.pt
+
 
 # Jupyter notebook checkpoints
 .ipynb_checkpoints/

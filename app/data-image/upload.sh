@@ -80,7 +80,7 @@ for f in /upload/models-pt/*.pt; do
 done
 
 echo "Checking sample videos in data bucket..."
-for vid in combined-video-no-gap-rooftop.mp4 bluejayclear.mp4; do
+for vid in cars.mp4 combined-video-no-gap-rooftop.mp4 bluejayclear.mp4; do
 	if ! mc stat "myminio/data/${vid}" >/dev/null 2>&1; then
 		echo "Uploading video (${vid})..."
 		mc cp "/upload/data/${vid}" myminio/data/
