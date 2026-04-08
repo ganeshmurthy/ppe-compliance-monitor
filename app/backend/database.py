@@ -361,6 +361,14 @@ def get_detection_class_by_name_and_config(
 # ----- App Config Operations -----
 
 
+def count_app_configs() -> int:
+    """Return the number of rows in app_config (for idempotent demo seeding)."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM app_config")
+        return int(cursor.fetchone()[0])
+
+
 def get_all_configs() -> list:
     """Return all app_config rows as list of dicts, with classes built from detection_classes."""
     with get_connection() as conn:
@@ -392,7 +400,11 @@ def get_config_by_id(config_id: int) -> dict | None:
     return c
 
 
-def insert_config(model_url: str, video_source: str, model_name: str) -> int:
+def insert_config(
+    model_url: str,
+    video_source: str,
+    model_name: str,
+) -> int:
     """Insert a new config and return the inserted id. Classes go to detection_classes via replace_detection_classes."""
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -489,6 +501,7 @@ Table: app_config
 - model_name (VARCHAR): OVMS served model id (must match model name in OVMS config)
 - video_source (VARCHAR): Video path or RTSP URL
 - created_at (TIMESTAMP): When config was created
+- Inference input tensor name: backend env MODEL_INPUT_NAME only (not in this table; Runtime defaults to x if unset)
 - classes: Derived from detection_classes (model_class_index, name, trackable)
 
 Table: detection_classes

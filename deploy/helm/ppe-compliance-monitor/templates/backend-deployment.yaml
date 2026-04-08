@@ -107,6 +107,10 @@ spec:
             - name: CONFIG_BUCKET
               value: config
             {{- end }}
+            - name: DEFAULT_OVMS_MODEL_URL
+              value: {{ .Values.backend.defaultOvmsModelUrl | default "http://ppe-predictor:9000" | quote }}
+            - name: MINIO_VIDEO_BUCKET
+              value: {{ .Values.storage.video.bucket | default "data" | quote }}
             {{- if .Values.postgresMcp.enabled }}
             - name: POSTGRES_MCP_URL
               value: "http://{{ include "ppe-compliance-monitor.fullname" . }}-postgres-mcp:{{ .Values.postgresMcp.port }}/sse"

@@ -271,9 +271,13 @@ def _inference_process_target(
         model_name = (config.get("model_name") or "").strip() or "ppe"
         log.info(
             f"Inference process: creating Runtime config_id={config['id']} "
-            f"service_url={model_url} model_name={model_name}"
+            f"service_url={model_url} model_name={model_name} input_name=env"
         )
-        runtime = Runtime(classes=classes, service_url=model_url, model_name=model_name)
+        runtime = Runtime(
+            classes=classes,
+            service_url=model_url,
+            model_name=model_name,
+        )
         tracker = DeepSort(max_age=30, n_init=3)
 
     def handle_init_shm(msg: dict) -> None:

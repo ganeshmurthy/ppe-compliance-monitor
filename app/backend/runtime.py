@@ -25,8 +25,8 @@ class Runtime:
                 "Runtime requires service_url (model_url from config). "
                 "Add a config with an inferencing URL via the Config dialog."
             )
-        _in = (os.getenv("MODEL_INPUT_NAME") or "").strip()
-        self.input_name = _in or "x"
+        _env = (os.getenv("MODEL_INPUT_NAME") or "").strip()
+        self.input_name = _env or "x"
         self.model_name = (model_name or "").strip() or (
             os.getenv("MODEL_NAME") or ""
         ).strip()

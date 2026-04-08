@@ -3,13 +3,11 @@ from flask_cors import CORS
 import cv2
 import json
 import os
-import tempfile
 import time
 from datetime import datetime
 
 from minio_client import (
     get_config_bucket,
-    download_file,
     upload_bytes,
     get_object_stream,
     object_exists,
@@ -17,12 +15,15 @@ from minio_client import (
 from multimodel import MultiModalAIDemo
 from llm import LLMChat
 from database import (
+    count_app_configs,
     get_all_configs,
     get_config_by_id,
     insert_config,
     delete_config,
     replace_detection_classes,
 )
+from seed_demo_configs import insert_demo_configs
+from thumbnail_utils import generate_thumbnail_for_video_source, is_s3_video_path
 from logger import get_logger
 
 log = get_logger(__name__)
@@ -47,6 +48,8 @@ CORS(app, resources={r"/*": {"origins": cors_allowed_origins}})
 # Video source is selected dynamically by the user (MP4 or RTSP from config).
 demo = MultiModalAIDemo()
 demo.setup_components()
+if count_app_configs() == 0:
+    insert_demo_configs()
 log.info("MultiModalAIDemo initialized (video source selected from UI)")
 
 llm_chat = LLMChat()
@@ -388,8 +391,8 @@ def config_create():
     try:
         config_id = insert_config(model_url, video_source, model_name)
         replace_detection_classes(config_id, entries)
-        if _is_s3_video_path(video_source):
-            _generate_thumbnail(video_source)
+        if is_s3_video_path(video_source):
+            generate_thumbnail_for_video_source(video_source)
         return jsonify({"id": config_id, "message": "Config created"}), 201
     except Exception as e:
         log.exception("config_create: %s", e)
@@ -446,82 +449,6 @@ def active_config_set():
 
 # Config storage: MinIO only (enables horizontal scaling)
 log.info("Config storage: MinIO bucket=%s", get_config_bucket())
-
-_VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv"}
-_THUMBNAIL_TIMESTAMP_S = 17.0
-
-
-def _is_s3_video_path(path):
-    """True if path is a universal S3 object URI (s3://bucket/key)."""
-    if not path or not isinstance(path, str):
-        return False
-    return path.strip().startswith("s3://")
-
-
-def _parse_s3_video_path(video_path):
-    """Parse S3 URI into (bucket, object_key). Returns None if not s3:// path."""
-    if not video_path or not isinstance(video_path, str):
-        return None
-    p = video_path.strip()
-    if p.startswith("s3://"):
-        parts = p[5:].split("/", 1)
-        if len(parts) == 2:
-            return (parts[0], parts[1])
-    return None
-
-
-def _generate_thumbnail(video_path):
-    """Generate a JPEG thumbnail from S3 video, upload to MinIO. Returns S3 key or None."""
-    if _is_s3_video_path(video_path):
-        return _generate_thumbnail_s3(video_path)
-    return None
-
-
-def _generate_thumbnail_s3(video_path):
-    """Generate thumbnail from S3 video, upload to MinIO. Returns S3 key or None."""
-    parsed = _parse_s3_video_path(video_path)
-    if not parsed:
-        return None
-    bucket, key = parsed
-    stem = os.path.splitext(os.path.basename(key))[0]
-    if not stem:
-        return None
-    thumb_key = f"thumbnails/{stem}.jpg"
-    if object_exists(bucket, thumb_key):
-        log.debug("Thumbnail already exists: %s/%s", bucket, thumb_key)
-        return thumb_key
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
-            tmp_path = tmp.name
-        try:
-            download_file(bucket, key, tmp_path)
-            cap = cv2.VideoCapture(tmp_path)
-            if not cap.isOpened():
-                log.warning("Could not open video for thumbnail: %s", video_path)
-                return None
-            fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-            frame_pos = int(_THUMBNAIL_TIMESTAMP_S * fps)
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_pos)
-            ret, frame = cap.read()
-            cap.release()
-            if ret and frame is not None:
-                ret_jpg, buf = cv2.imencode(
-                    ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85]
-                )
-                if ret_jpg:
-                    upload_bytes(
-                        bucket, thumb_key, buf.tobytes(), content_type="image/jpeg"
-                    )
-                    log.info("Generated thumbnail: %s/%s", bucket, thumb_key)
-                    return thumb_key
-        finally:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-    except Exception as e:
-        log.warning("Thumbnail generation failed for %s: %s", video_path, e)
-    return None
 
 
 @api.route("/thumbnails/<path:filename>")

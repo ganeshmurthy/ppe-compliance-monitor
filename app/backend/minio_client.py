@@ -4,6 +4,7 @@ import io
 import os
 import time
 from minio import Minio
+from minio.commonconfig import CopySource
 from minio.error import S3Error
 from urllib.parse import urlparse
 from logger import get_logger
@@ -104,7 +105,19 @@ def upload_file(
     """
     client = get_minio_client()
     client.fput_object(bucket, object_name, file_path, content_type=content_type)
-    log.info("Uploaded %s to %s/%s", file_path, bucket, object_name)
+    log.info(f"Uploaded {file_path} to {bucket}/{object_name}")
+
+
+def copy_object(
+    dest_bucket: str,
+    dest_key: str,
+    src_bucket: str,
+    src_key: str,
+) -> None:
+    """Server-side copy within or across buckets (same MinIO)."""
+    client = get_minio_client()
+    client.copy_object(dest_bucket, dest_key, CopySource(src_bucket, src_key))
+    log.info(f"Copied s3://{src_bucket}/{src_key} to s3://{dest_bucket}/{dest_key}")
 
 
 def upload_bytes(
@@ -130,7 +143,7 @@ def upload_bytes(
         length=len(data),
         content_type=content_type,
     )
-    log.info("Uploaded %d bytes to %s/%s", len(data), bucket, object_name)
+    log.info(f"Uploaded {len(data)} bytes to {bucket}/{object_name}")
 
 
 def get_object_stream(bucket: str, object_name: str):

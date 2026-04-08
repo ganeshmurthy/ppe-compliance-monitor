@@ -14,6 +14,8 @@ backend:
   modelInputName: "x"
   modelVersion: "1"
   logLevel: "INFO"
+  # Sets DEFAULT_OVMS_MODEL_URL for insert_demo_configs() when DB has no app_config; see app/backend/seed_demo_configs.py
+  defaultOvmsModelUrl: "http://ppe-predictor:9000"
 
 openai:
   apiToken: ""
