@@ -324,12 +324,21 @@ def _build_ovms_args(cfg):
         "--cache_dir=/tmp/ovms_cache",
         f"--plugin_config={plugin_config}",
     ]
+    # With --config_path, OVMS rejects per-model CLI flags (config.cpp): nireq!=0,
+    # non-empty plugin_config, batch_size, shape, etc. Tuning belongs in config.json.
+    common_tail_config_file = [
+        "--file_system_poll_wait_seconds=0",
+        "--metrics_enable",
+        "--rest_workers=2",
+        "--rest_bind_address=0.0.0.0",
+        "--cache_dir=/tmp/ovms_cache",
+    ]
     if cfg.get("multi_model_serving") and cfg["runtime_type"] == "openvino":
         return [
             "--config_path=/mnt/models/config.json",
             f"--port={cfg['grpc_port']}",
             f"--rest_port={cfg['rest_port']}",
-            *common_tail,
+            *common_tail_config_file,
         ]
     return [
         "--model_name={{.Name}}",
@@ -567,6 +576,16 @@ def build_inference_service_spec(cfg, model_info, sa_name):
         },
         "serviceAccountName": sa_name,
     }
+
+    if (
+        cfg.get("multi_model_serving")
+        and cfg.get("runtime_type", "").lower() == "openvino"
+    ):
+        # RawDeployment merges ServingRuntime args with per-model template args
+        # (--model_name, --model_path). Multi-model OVMS uses only --config_path;
+        # mixing both makes OVMS exit: "Model parameters in CLI are exclusive
+        # with the config file". predictor.model.args replaces the merged list.
+        predictor["model"]["args"] = _build_ovms_args(cfg)
 
     if cfg.get("gpu_tolerations"):
         predictor["tolerations"] = cfg["gpu_tolerations"]

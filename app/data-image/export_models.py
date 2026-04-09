@@ -27,6 +27,51 @@ EXCLUDE_STEMS = frozenset(
 OVMS_MOUNT_BASE = os.environ.get("OVMS_CLUSTER_MOUNT_BASE", "/mnt/models")
 
 
+def _ovms_config_nireq() -> int:
+    raw = os.environ.get("OVMS_CONFIG_NIREQ", "2").strip()
+    try:
+        n = int(raw)
+    except ValueError:
+        print(f"warning: invalid OVMS_CONFIG_NIREQ={raw!r}, using 2", file=sys.stderr)
+        return 2
+    return max(1, n)
+
+
+def _ovms_config_plugin_config() -> dict:
+    raw = os.environ.get("OVMS_CONFIG_PLUGIN_CONFIG")
+    if raw is not None and raw.strip():
+        try:
+            val = json.loads(raw)
+        except json.JSONDecodeError as e:
+            print(
+                f"ERROR: OVMS_CONFIG_PLUGIN_CONFIG must be JSON: {e}", file=sys.stderr
+            )
+            sys.exit(1)
+        if not isinstance(val, dict):
+            print(
+                "ERROR: OVMS_CONFIG_PLUGIN_CONFIG must be a JSON object",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        return val
+    return {"PERFORMANCE_HINT": "THROUGHPUT"}
+
+
+def _ovms_per_model_extras() -> dict:
+    """Fields OVMS reads per model in config.json (not on CLI with --config_path)."""
+    extras: dict = {
+        "nireq": _ovms_config_nireq(),
+        "plugin_config": _ovms_config_plugin_config(),
+    }
+    device = os.environ.get("OVMS_CONFIG_TARGET_DEVICE", "").strip()
+    if device:
+        extras["target_device"] = device
+    batch = os.environ.get("OVMS_CONFIG_BATCH_SIZE", "").strip()
+    if batch:
+        extras["batch_size"] = batch
+    return extras
+
+
 def write_ovms_config_json(root: str, mount_base: str = OVMS_MOUNT_BASE) -> None:
     """Emit OVMS multi-model config.json under ovms/ (ISVC storage path prefix = ovms)."""
     entries: list[dict] = []
@@ -42,14 +87,12 @@ def write_ovms_config_json(root: str, mount_base: str = OVMS_MOUNT_BASE) -> None
             continue
         xml = os.path.join(path, "1", f"{name}.xml")
         if os.path.isfile(xml):
-            entries.append(
-                {
-                    "config": {
-                        "name": name,
-                        "base_path": f"{mount_base.rstrip('/')}/{name}",
-                    }
-                }
-            )
+            model_cfg: dict = {
+                "name": name,
+                "base_path": f"{mount_base.rstrip('/')}/{name}",
+            }
+            model_cfg.update(_ovms_per_model_extras())
+            entries.append({"config": model_cfg})
     if not entries:
         print("warning: skipping config.json (no OpenVINO model dirs)", file=sys.stderr)
         return

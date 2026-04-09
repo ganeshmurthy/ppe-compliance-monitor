@@ -237,6 +237,7 @@ services:
       - ../../app/models:/source:ro,z
       - model_repo:/models:z
       - ./yolo-model-prep.sh:/prep.sh:ro,z
+      - ../../app/data-image/export_models.py:/export_models/export_models.py:ro,z
     entrypoint: ["bash", "/prep.sh"]
     networks:
       - ppe
