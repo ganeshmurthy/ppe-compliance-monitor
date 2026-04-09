@@ -1,8 +1,7 @@
 apiVersion: v2
 name: bootstrap
 description: >-
-  Bootstrap Helm chart for per-tenant PPE Compliance Monitor deployments.
-  Creates an Argo CD Application that points to the main application chart.
+  Bootstrap Helm chart for per-tenant PPE Compliance Monitor deployments. Creates an Argo CD Application that points to the main application chart.
 type: application
 version: 0.1.0
 appVersion: "1.0.0"
