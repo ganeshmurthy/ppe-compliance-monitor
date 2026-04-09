@@ -9,7 +9,7 @@ backend:
     repository: quay.io/rh-ai-quickstart/ppe-compliance-monitor-backend
     tag: latest
     pullPolicy: Always
-  # Example predictor URL; when runtimeDeployer + openvino.multiModel, use the multi-model ISVC (e.g. multi-model-serving-predictor).
+  # REST URL for KServe status (8888); gRPC for OVMS remains port 9000 (defaultOvmsModelUrl). Multi-model OVMS keeps ISVC name "ppe" → ppe-predictor.
   serviceUrl: "http://ppe-predictor.svc.cluster.local:8888"
   modelInputName: "x"
   modelVersion: "1"
@@ -163,8 +163,9 @@ runtimeDeployer:
   enabled: true
   # Default OVMS model id for cluster bootstrap (backend uses app_config.model_name per config).
   modelName: "ppe"
-  # Inference(SVC) metadata.name when modelServing.openvino.multiModel or kserve.multiModel is true.
-  inferenceServiceName: "multi-model-serving"
+  # When multi-model serving is on, KServe sets this as the InferenceService name (predictor Service becomes <name>-predictor).
+  # Use "ppe" so OpenVINO multi-model matches defaultOvmsModelUrl/seeded model_url (ppe-predictor:9000). Override if you use a different ISVC name.
+  inferenceServiceName: "ppe"
   image:
     repository: quay.io/rh-ai-quickstart/ppe-compliance-monitor-runtime
     tag: latest
@@ -197,10 +198,10 @@ modelServing:
     modelFormat:
       name: pytorch
       version: "2"
-    # Single model: ovms/<model_name> (matches Triton-style triton/<model_name>); logical OVMS name is still model_name (e.g. ppe).
+    # Single-model only: ovms/<model_name> synced to the predictor. When multiModel is true, multiModelStoragePath is used instead.
     modelPath: ovms/ppe
-    # Multi-model: sync prefix ovms/ (IR trees + ovms/config.json); OVMS --config_path=/mnt/models/config.json
-    multiModel: false
+    # Multi-model (default for OpenShift OVMS): sync full ovms/ (all IR trees + config.json); create_runtime uses --config_path=/mnt/models/config.json
+    multiModel: true
     multiModelStoragePath: ovms
   # KServe-native runtime config (used when runtimeType=kserve)
   # NVIDIA Triton Inference Server -- GPU-accelerated ONNX serving via V2/OIP REST

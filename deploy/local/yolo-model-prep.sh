@@ -31,30 +31,21 @@ for pt in "${pts[@]}"; do
 	cp "/tmp/${stem}_openvino_model/"*.bin "${target_dir}/${stem}.bin"
 done
 
-python3 <<'PY'
+# Same OVMS per-model tuning as data-image export (nireq, plugin_config, optional batch/device via env).
+python3 -c "
 import json
-import os
+import sys
 
-root = "/models/ovms"
-os.makedirs(root, exist_ok=True)
-entries = []
-for name in sorted(os.listdir(root)):
-    path = os.path.join(root, name)
-    if not os.path.isdir(path) or name.startswith("."):
-        continue
-    xml = os.path.join(path, "1", f"{name}.xml")
-    if os.path.isfile(xml):
-        entries.append(
-            {"config": {"name": name, "base_path": f"/models/ovms/{name}"}}
-        )
+sys.path.insert(0, '/export_models')
+from export_models import write_ovms_config_json
 
-cfg = {"model_config_list": entries}
-out = os.path.join(root, "config.json")
-with open(out, "w", encoding="utf-8") as f:
-    json.dump(cfg, f, indent=2)
-print(f"Wrote {out} with {len(entries)} model(s): {[e['config']['name'] for e in entries]}")
-if not entries:
-    raise SystemExit("No models found under /models/ovms — export failed?")
-PY
+write_ovms_config_json('/models', '/models/ovms')
+with open('/models/ovms/config.json', encoding='utf-8') as f:
+    cfg = json.load(f)
+names = [e['config']['name'] for e in cfg.get('model_config_list', [])]
+if not names:
+    raise SystemExit('No models found under /models/ovms — export failed?')
+print(f'Wrote /models/ovms/config.json with {len(names)} model(s): {names}')
+"
 
 echo "yolo-model-prep: complete"
