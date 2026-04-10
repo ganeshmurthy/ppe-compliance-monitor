@@ -117,8 +117,6 @@ metadata:
   labels:
     {{- include "ppe-compliance-monitor.labels" . | nindent 4 }}
     app.kubernetes.io/component: runtime-deployer
-  annotations:
-    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded,hook-failed
 spec:
   backoffLimit: 3
   template:
