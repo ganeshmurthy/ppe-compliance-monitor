@@ -117,6 +117,8 @@ metadata:
   labels:
     {{- include "ppe-compliance-monitor.labels" . | nindent 4 }}
     app.kubernetes.io/component: runtime-deployer
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
 spec:
   backoffLimit: 3
   template:
