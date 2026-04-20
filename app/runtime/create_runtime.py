@@ -386,9 +386,15 @@ def build_serving_runtime_spec(cfg):
                     "args": _build_ovms_args(cfg),
                     "ports": [
                         {
+                            "name": "http",
                             "containerPort": cfg["rest_port"],
                             "protocol": "TCP",
-                        }
+                        },
+                        {
+                            "name": "grpc",
+                            "containerPort": cfg["grpc_port"],
+                            "protocol": "TCP",
+                        },
                     ],
                 }
             ],
@@ -440,9 +446,15 @@ def build_kserve_serving_runtime_spec(cfg):
         "args": cfg.get("runtime_args") or _build_triton_args(cfg),
         "ports": [
             {
+                "name": "http",
                 "containerPort": cfg["rest_port"],
                 "protocol": "TCP",
-            }
+            },
+            {
+                "name": "grpc",
+                "containerPort": cfg["grpc_port"],
+                "protocol": "TCP",
+            },
         ],
         "volumeMounts": [
             {"name": "shm", "mountPath": "/dev/shm"},
