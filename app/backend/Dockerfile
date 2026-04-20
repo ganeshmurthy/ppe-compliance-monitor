@@ -1,10 +1,11 @@
 FROM --platform=linux/amd64 registry.access.redhat.com/ubi9/python-311:1-77
 
 USER 0
+
 RUN dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm && \
     dnf install -y mesa-libGL glib2 && \
     dnf clean all
-USER 1001
+
 
 WORKDIR /backend
 
@@ -32,7 +33,10 @@ RUN mkdir -p /tmp/.cache/huggingface \
              /tmp/.cache/matplotlib \
              /tmp/Ultralytics
 
+
 EXPOSE 8888
+
+USER 1001
 
 ENTRYPOINT ["python"]
 CMD ["app.py"]
