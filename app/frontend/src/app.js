@@ -1,33 +1,31 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Routes, Route, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import VideoPlayer from './components/VideoPlayer';
 import PPEDescription from './components/PPEDescription';
 import ChatBot from './components/ChatBot';
 import LogoBar from './components/LogoBar';
-import ConfigModal from './components/ConfigModal';
 import SourceSection from './components/SourceSection';
+import ConfigPage from './pages/ConfigPage';
 import { API_URL } from './config';
 import './App.css';
 import './App.custom.css';
 
-function App() {
-  const [showConfig, setShowConfig] = useState(false);
+function Dashboard() {
+  const navigate = useNavigate();
   const [configs, setConfigs] = useState([]);
   const [selectedConfigId, setSelectedConfigId] = useState(null);
   const [activeConfigId, setActiveConfigId] = useState(null);
   const switchRequestSeq = useRef(0);
 
   const handleSelectConfig = useCallback(async (configId) => {
-    // Update UI selection immediately; stream switch still waits for backend activation.
     setSelectedConfigId(configId);
-    // Switch the feed immediately so toggling sources feels responsive.
     setActiveConfigId(configId);
     const currentSeq = ++switchRequestSeq.current;
     if (configId == null) {
       return;
     }
     axios.post(`${API_URL}/active_config`, { config_id: configId }).catch((err) => {
-      // Ignore stale responses if a newer selection already happened.
       if (currentSeq !== switchRequestSeq.current) return;
       console.error('Failed to set active config:', err);
     });
@@ -36,7 +34,8 @@ function App() {
   const fetchConfigs = useCallback(async () => {
     try {
       const res = await axios.get(`${API_URL}/config`);
-      setConfigs(res.data);
+      const data = res.data;
+      setConfigs(Array.isArray(data) ? data : []);
     } catch (err) {
       setConfigs([]);
     }
@@ -46,14 +45,8 @@ function App() {
     fetchConfigs();
   }, [fetchConfigs]);
 
-  const handleConfigModalClose = () => {
-    setShowConfig(false);
-    fetchConfigs();
-  };
-
   return (
     <div className="App">
-      <ConfigModal isOpen={showConfig} onClose={handleConfigModalClose} />
       <LogoBar />
       <h1 className="main-title">
         Multi Modal and Multi Model Monitoring System
@@ -64,7 +57,7 @@ function App() {
             configs={configs}
             selectedConfigId={selectedConfigId}
             onSelectConfig={handleSelectConfig}
-            onAddVideo={() => setShowConfig(true)}
+            onAddVideo={() => navigate('/configure')}
           />
         </aside>
         <main className="main-column">
@@ -76,6 +69,15 @@ function App() {
         </aside>
       </div>
     </div>
+  );
+}
+
+function App() {
+  return (
+    <Routes>
+      <Route path="/configure" element={<ConfigPage />} />
+      <Route path="/" element={<Dashboard />} />
+    </Routes>
   );
 }
 
