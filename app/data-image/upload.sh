@@ -21,7 +21,11 @@ echo "Buckets ready"
 RUNTIME_TYPE="${RUNTIME_TYPE}"
 echo "Runtime type: ${RUNTIME_TYPE}"
 
-if [ "$RUNTIME_TYPE" = "openvino" ]; then
+# OVMS assets must reach MinIO whenever the data image includes them. The init Job
+# uses modelServing.runtimeType (often kserve) while an OVMS InferenceService still
+# expects models/ovms/config.json under the KServe storage prefix—so this is not
+# gated on RUNTIME_TYPE.
+if [ -d /upload/models/ovms ]; then
 	echo "Checking / uploading OpenVINO model trees (ovms/<model>/1/)..."
 	for d in /upload/models/ovms/*/; do
 		[ -d "$d" ] || continue
@@ -41,7 +45,9 @@ if [ "$RUNTIME_TYPE" = "openvino" ]; then
 		echo "Uploading OpenVINO config.json (multi-model OVMS)..."
 		mc cp /upload/models/ovms/config.json myminio/models/ovms/config.json
 	fi
-elif [ "$RUNTIME_TYPE" = "kserve" ]; then
+fi
+
+if [ "$RUNTIME_TYPE" = "kserve" ]; then
 	echo "Checking / uploading Triton ONNX model trees (triton/<model>/1/model.onnx)..."
 	for d in /upload/models/triton/*/; do
 		[ -d "$d" ] || continue
@@ -62,6 +68,8 @@ elif [ "$RUNTIME_TYPE" = "kserve" ]; then
 		echo "Uploading Triton config for triton/ppe/..."
 		mc cp /upload/triton-config/config.pbtxt myminio/models/triton/ppe/config.pbtxt
 	fi
+elif [ "$RUNTIME_TYPE" = "openvino" ]; then
+	echo "Skipping Triton ONNX uploads (runtime is OpenVINO)."
 else
 	echo "ERROR: Unknown RUNTIME_TYPE '${RUNTIME_TYPE}'. Expected 'openvino' or 'kserve'."
 	exit 1

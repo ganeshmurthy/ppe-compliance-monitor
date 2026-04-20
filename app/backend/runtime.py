@@ -42,6 +42,12 @@ class Runtime:
             self.model_version = 1
         self._model_version_str = str(self.model_version)
 
+        _to = (os.getenv("OVMS_GRPC_TIMEOUT") or "").strip()
+        try:
+            self._ovms_predict_timeout = float(_to) if _to else 20.0
+        except ValueError:
+            self._ovms_predict_timeout = 20.0
+
         runtime_type = os.getenv("RUNTIME_TYPE", "openvino").lower()
         openshift_mode = os.getenv("OPENSHIFT", "false").lower() == "true"
 
@@ -73,7 +79,7 @@ class Runtime:
                 "Set ACTIVE_CONFIG_ID to a valid app_config id."
             )
         self.CLASSES = classes
-        log.info("Runtime using %d classes from config", len(self.CLASSES))
+        log.info(f"Runtime using {len(self.CLASSES)} classes from config")
 
         self._pad_shape: tuple[int, int] = (0, 0)
         self._padded: np.ndarray | None = None
@@ -110,14 +116,24 @@ class Runtime:
         Local inference via persistent gRPC connection to OVMS.
         """
         inputs = {self.input_name: image}
-        return self._grpc_client.predict(inputs, self.model_name, self.model_version)
+        return self._grpc_client.predict(
+            inputs,
+            self.model_name,
+            self.model_version,
+            timeout=self._ovms_predict_timeout,
+        )
 
     def remote_inference(self, image: np.ndarray) -> np.ndarray:
         """
         Remote inference via persistent gRPC connection to OVMS (binary protobuf).
         """
         inputs = {self.input_name: image}
-        return self._grpc_client.predict(inputs, self.model_name, self.model_version)
+        return self._grpc_client.predict(
+            inputs,
+            self.model_name,
+            self.model_version,
+            timeout=self._ovms_predict_timeout,
+        )
 
     def kserve_inference_grpc(self, image: np.ndarray) -> np.ndarray:
         """
