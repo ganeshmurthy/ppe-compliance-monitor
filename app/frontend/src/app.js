@@ -20,15 +20,20 @@ function Dashboard() {
 
   const handleSelectConfig = useCallback(async (configId) => {
     setSelectedConfigId(configId);
-    setActiveConfigId(configId);
     const currentSeq = ++switchRequestSeq.current;
     if (configId == null) {
+      setActiveConfigId(null);
       return;
     }
-    axios.post(`${API_URL}/active_config`, { config_id: configId }).catch((err) => {
+    try {
+      await axios.post(`${API_URL}/active_config`, { config_id: configId });
+    } catch (err) {
       if (currentSeq !== switchRequestSeq.current) return;
       console.error('Failed to set active config:', err);
-    });
+      return;
+    }
+    if (currentSeq !== switchRequestSeq.current) return;
+    setActiveConfigId(configId);
   }, []);
 
   const fetchConfigs = useCallback(async () => {

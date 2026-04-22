@@ -15,8 +15,8 @@ backend:
   modelVersion: "1"
   logLevel: "INFO"
   # Sets DEFAULT_OVMS_MODEL_URL for insert_demo_configs() when DB has no app_config; see app/backend/seed_demo_configs.py
-  # KServe Service maps port 80 → container gRPC port (9000); backend strips http:// for gRPC.
-  defaultOvmsModelUrl: "http://ppe-predictor:80"
+  # ppe-predictor Service: 80 = REST, 9000 = gRPC. ovmsclient uses gRPC only — do not use :80 here.
+  defaultOvmsModelUrl: "http://ppe-predictor:9000"
   # gRPC predict deadline (seconds) for ovmsclient; CPU OVMS on OpenShift often needs >10s on cold start
   ovmsGrpcTimeout: "60"
 

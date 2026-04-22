@@ -7,6 +7,7 @@ from ovmsclient import make_grpc_client
 import tritonclient.grpc as triton_grpc
 
 from logger import get_logger
+from openshift_grpc_url import model_url_to_ovms_grpc_target_openshift
 from response import Detection, postprocess_image, _raw_prediction_tensor
 
 log = get_logger(__name__)
@@ -64,7 +65,7 @@ class Runtime:
             self._infer_output = triton_grpc.InferRequestedOutput("output0")
             self.inference_fun = self.kserve_inference_grpc
         elif openshift_mode:
-            grpc_url = self.service_url.replace("https://", "").replace("http://", "")
+            grpc_url = model_url_to_ovms_grpc_target_openshift(self.service_url)
             self._grpc_client = make_grpc_client(grpc_url)
             self.inference_fun = self.remote_inference
         else:
