@@ -1,54 +1,89 @@
 # PPE Compliance Monitor Demo
 
-This repository contains a Flask backend that performs PPE detection on a video
+This repository contains a Flask backend that performs object detection on a video
 stream and a React frontend that visualizes the results and provides a chat UI.
 
 ## Overview
 
-The application uses a trained model to detect objects from a live video feed.
-The feed is sent to an endpoint where the backend detects objects and reports
-compliance. For example, a model trained to identify workers wearing vests and
-helmets in a boiler room will mark any worker without a helmet as non-compliant
-and include that in the reported safety summary.
+The application uses trained object-detection models to analyze live video
+streams and uploaded video files. In the UI, users can monitor live RTSP feeds
+or select MP4 sources from thumbnails, and selecting a source activates its
+associated configuration. The backend then switches to the model tied to that
+selected source, runs inference on the stream, and returns detection results
+and safety/compliance summaries in real time.
 
 ## Architecture
 
+### Video Upload Workflow
+
+```mermaid
+flowchart LR
+    U[User]
+    FE[Frontend Config Page]
+    API[Backend API\nPOST /api/config/upload]
+    MINIO[(MinIO config bucket)]
+    DB[(PostgreSQL app_config)]
+
+    U --> FE
+    FE -->|Select MP4 file + multipart/form-data upload| API
+    API -->|Store uploads/thumbnails| MINIO
+    API -->|Return s3://config/uploads/<filename>| FE
+    FE -->|Create source with video_source| API
+    API -->|Save source config| DB
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              MinIO Object Storage                            │
-│  ┌─────────────────────┐           ┌─────────────────────────────────────┐  │
-│  │  models bucket      │           │  data bucket                        │  │
-│  │  └── ppe.pt (84MB)  │           │  └── combined-video-no-gap-...mp4   │  │
-│  └─────────────────────┘           └─────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────────┘
-                    ▲                              │
-                    │ upload (init)                │ download (init)
-                    │                              ▼
-┌───────────────────┴─────────┐    ┌──────────────────────────────────────────┐
-│     data-loader container   │    │           Backend Container               │
-│  - Uploads model to MinIO   │    │  - Reads model/video from PVC (K8s)      │
-│  - Uploads video to MinIO   │    │  - Or downloads from MinIO (local)       │
-│  - Idempotent               │    │  - Flask API on port 8888                │
-└─────────────────────────────┘    └──────────────────────────────────────────┘
-                                                    │
-                                                    ▼
-                                   ┌──────────────────────────────────────────┐
-                                   │         Frontend Container                │
-                                   │  - React App on port 3000                │
-                                   │  - Video feed, dashboard, chat           │
-                                   └──────────────────────────────────────────┘
+
+### Application Workflow
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'background': '#ffffff' }}}%%
+flowchart LR
+    U[User]
+    FE[Frontend Dashboard]
+    API[Backend Flask API\n/api/*]
+    CFG[Read selected config]
+    INF[Inference Runtime]
+    BBOX[Draw bounding boxes]
+    DB[(PostgreSQL\nconfigs + classes + detections)]
+    MINIO[(MinIO\nvideos + models + thumbnails)]
+    RTSP[Live RTSP stream]
+    LLM[OpenAI-compatible LLM endpoint]
+
+    U --> FE
+    FE -->|GET /config| API
+    FE -->|POST /active_config| API
+    API --> CFG
+    CFG --> DB
+    API -->|Switch model_url + model_name| INF
+
+    FE -->|GET /video_feed| API
+    API --> INF
+    RTSP --> INF
+    MINIO -->|MP4/model assets| INF
+    INF --> BBOX
+    BBOX -->|detections + summary| API
+    API --> FE
+
+    FE -->|POST /chat| API
+    API -->|Context + SQL-backed answers| LLM
+    LLM --> API
+    API --> FE
+
+    linkStyle default stroke:#2563eb,stroke-width:2.5px
 ```
 
 ### Components
 
-- **Backend** (Flask, OpenCV, Ultralytics): video processing, detection, summaries
-- **Frontend** (React): UI for live feed, summaries, and chat
-- **MinIO**: S3-compatible object storage for model and video files
-- **Data Loader**: Init container that uploads files to MinIO
+- **Backend** (Flask, OpenCV): video decode, MJPEG output, and drawn overlays; **inference** over gRPC to **OpenVINO Model Server** (`ovmsclient`, local/CPU) or **Triton** via `tritonclient` (KServe / GPU path); **multi-object tracking** with **Supervision** (ByteTrack); **PostgreSQL** for app configs, classes, tracks, and observations; **MinIO** for object storage; **LLM chat** with **LangGraph** / **LangChain** (OpenAI-compatible API) and optional read-only **postgres-mcp** for SQL tools; optional **Arize Phoenix** for tracing
+- **Frontend** (React, React Router, Axios): dashboard, source selection (RTSP / MP4 thumbnails), configuration page, and chat with Markdown rendering
+- **OpenVINO Model Server (OVMS)**: model serving; local stack also runs **yolo-model-prep** (Ultralytics-based export) to build the model repo from `app/models/*.pt` before OVMS starts
+- **MinIO**: S3-compatible object storage for models, videos, uploads, and config-related objects
+- **PostgreSQL**: durable storage for multi-source configs and tracking data
+- **Data Loader**: init container that seeds model and video objects into MinIO
+- **Label Studio** (optional): annotation UI using the same PostgreSQL and MinIO stack
 
 ### Storage Strategy
 
-Model (`ppe.pt`) and video files are stored in MinIO rather than baked into container images:
+All models and video files are stored in MinIO rather than baked into container images:
 
 | Deployment | Storage Method |
 |------------|----------------|
@@ -63,12 +98,21 @@ Model (`ppe.pt`) and video files are stored in MinIO rather than baked into cont
 
 ## Configuration
 
-Copy `.env.example` to `.env` and fill in your values. The `.env.example` file contains the required OpenAI-compatible LLM variables: `OPENAI_API_TOKEN`, `OPENAI_API_ENDPOINT`, `OPENAI_MODEL`, and `OPENAI_TEMPERATURE`.  
-**Important:** When specifying the `OPENAI_API_ENDPOINT`, make sure to add `/v1` at the end (e.g., `https://your-api-endpoint.example.com/v1`).  
-When you run `make local-up`, `make local-build-up`, or `make deploy`, you will be prompted for any missing required values.
+Copy `.env.example` to `.env` and fill in your values. The `.env.example`
+file contains the required OpenAI-compatible LLM variables:
+`OPENAI_API_TOKEN`, `OPENAI_API_ENDPOINT`, `OPENAI_MODEL`, and
+`OPENAI_TEMPERATURE`.
 
+**Important:** When specifying `OPENAI_API_ENDPOINT`, include `/v1` at the end
+(for example, `https://your-api-endpoint.example.com/v1`).
 
-Copy `.env.example` to `.env` and fill in your values. The `.env.example` file contains the required OpenAI-compatible LLM variables (`OPENAI_API_TOKEN`, `OPENAI_API_ENDPOINT`, `OPENAI_MODEL`, `OPENAI_TEMPERATURE`). On `make local-up`, `make local-build-up`, or `make deploy`, you will be prompted for any missing required values.
+OpenShift/Kubernetes **`make deploy`** targets run **`check-openai-env`** and
+prompt for any missing OpenAI values, writing them to `.env`. Local workflows
+(`make local-build-up`, `make dev-backend`) do **not** run that prompt — create
+`.env` yourself before starting the backend so the chat stack can initialize.
+
+Which **`make deploy`** variant to use (GPU vs CPU model serving, Label Studio)
+is covered under **OpenShift/Kubernetes Deployment**.
 
 Backend environment variables:
 - `PORT`: backend port (default `8888`)
@@ -148,6 +192,8 @@ The `training/` folder includes an example dataset and a [detailed README](train
 
 ## OpenShift/Kubernetes Deployment
 
+Configure OpenAI-related variables in `.env` first — see **Configuration**.
+
 ### Build and Push Images
 
 ```bash
@@ -163,14 +209,30 @@ make build-push-data
 
 ### Deploy
 
+All targets below use the same Helm chart and `.env` OpenAI settings; they differ
+only by model-serving runtime (`RUNTIME_TYPE`) and optional Label Studio.
+
+| Makefile target | Model serving | Label Studio |
+|-----------------|---------------|--------------|
+| `make deploy` or `make deploy-gpu` | KServe / Triton (`RUNTIME_TYPE=kserve`) | off |
+| `make deploy-openvino` | OpenVINO Model Server (`RUNTIME_TYPE=openvino`) | off |
+| `make deploy-labelstudio` | KServe / Triton | on |
+| `make deploy-openvino-labelstudio` | OpenVINO Model Server | on |
+
 ```bash
 make deploy NAMESPACE=<your-namespace>
 ```
 
-To deploy with Label Studio enabled:
+```bash
+make deploy-openvino NAMESPACE=<your-namespace>
+```
 
 ```bash
 make deploy-labelstudio NAMESPACE=<your-namespace>
+```
+
+```bash
+make deploy-openvino-labelstudio NAMESPACE=<your-namespace>
 ```
 
 ### Undeploy
