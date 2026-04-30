@@ -1,75 +1,81 @@
-# PPE Compliance Monitor Demo
+<!-- omit from toc -->
+# Multimodal monitoring with video analytics and AI-assisted insights
 
 This repository contains a Flask backend that performs object detection on a video
 stream and a React frontend that visualizes the results and provides a chat UI.
 
-## Overview
+<!-- omit from toc -->
+## Table of Contents
+- [Detailed description](#detailed-description)
+- [Architecture](#architecture)
+  - [Architecture diagrams](#architecture-diagrams)
+  - [Video Upload Workflow](#video-upload-workflow)
+  - [Application Workflow](#application-workflow)
+  - [Components](#components)
+  - [Storage Strategy](#storage-strategy)
+- [Requirements](#requirements)
+  - [Minimum hardware expectations](#minimum-hardware-expectations)
+  - [Minimum software requirements](#minimum-software-requirements)
+  - [Required user permissions](#required-user-permissions)
+- [Configuration](#configuration)
+- [Deploy](#deploy)
+  - [Prerequisites](#prerequisites)
+  - [Supported model-serving profiles](#supported-model-serving-profiles)
+  - [Installation steps](#installation-steps)
+  - [Deployment workflow](#deployment-workflow)
+  - [Helm values](#helm-values)
+  - [Undeploy](#undeploy)
+  - [Local Development (Podman Compose)](#local-development-podman-compose)
+  - [Local Development (No Containers)](#local-development-no-containers)
+- [Training a Custom Model](#training-a-custom-model)
+- [API Endpoints](#api-endpoints)
+  - [Example request](#example-request)
+- [Tags](#tags)
+
+
+## Detailed description
 
 The application uses trained object-detection models to analyze live video
 streams and uploaded video files. In the UI, users can monitor live RTSP feeds
 or select MP4 sources from thumbnails, and selecting a source activates its
 associated configuration. The backend then switches to the model tied to that
 selected source, runs inference on the stream, and returns detection results
-and safety/compliance summaries in real time.
+and safety and operational summaries in real time.
+
+With this demo you can:
+
+- Run **live RTSP** or **MP4** sources with per-source configuration and model selection
+- Upload videos via the config flow and persist sources backed by **MinIO** and **PostgreSQL**
+- View **detections**, overlays, and summaries through the React dashboard
+- Use the **chat UI** with an OpenAI-compatible LLM (LangGraph / LangChain) and optional SQL-backed tools
+- Deploy locally (**Podman Compose** or bare-metal dev) or to **Kubernetes/OpenShift** with **Triton/KServe** or **OpenVINO Model Server**, optionally with **Label Studio**
 
 ## Architecture
 
+### Architecture diagrams
+
+Static overview (SVG): [`docs/images/architecture.svg`](docs/images/architecture.svg). Additional slides: [`docs/architecture-slides.html`](docs/architecture-slides.html) (see [`docs/architecture-slides-README.md`](docs/architecture-slides-README.md)). The workflow figures below are PNG exports from Mermaid sources (**click a diagram to open the full-resolution PNG**). See [`docs/mermaid.README.md`](docs/mermaid.README.md) for what the `.mmd` files are and how to regenerate the thumbnails and large images.
+
+| Layer / component | Technology | Purpose / description |
+|-------------------|------------|------------------------|
+| **UI** | React, React Router, Axios | Dashboard, RTSP/MP4 source selection, configuration page, chat with Markdown |
+| **API** | Flask (`/api/*`) | Config, active source, video feed, chat, uploads |
+| **Inference** | OVMS (`ovmsclient`) or Triton (`tritonclient` via KServe) | Model serving; gRPC inference from the backend |
+| **Tracking** | Supervision (ByteTrack) | Multi-object tracking |
+| **LLM** | OpenAI-compatible API, LangGraph / LangChain | Chat; optional read-only **postgres-mcp** SQL tools |
+| **Observability** | Arize Phoenix (optional) | Tracing |
+| **Storage** | MinIO | Models, videos, uploads, thumbnails, config objects |
+| **Database** | PostgreSQL | Configs, classes, tracks, observations |
+| **Prep / seed** | yolo-model-prep (local), data-loader (init) | Export/build model repo from `app/models/*.pt`; seed MinIO |
+| **Annotation (optional)** | Label Studio | Same PostgreSQL + MinIO stack |
+
 ### Video Upload Workflow
 
-```mermaid
-flowchart LR
-    U[User]
-    FE[Frontend Config Page]
-    API[Backend API\nPOST /api/config/upload]
-    MINIO[(MinIO config bucket)]
-    DB[(PostgreSQL app_config)]
-
-    U --> FE
-    FE -->|Select MP4 file + multipart/form-data upload| API
-    API -->|Store uploads/thumbnails| MINIO
-    API -->|Return s3://config/uploads/<filename>| FE
-    FE -->|Create source with video_source| API
-    API -->|Save source config| DB
-```
+[![Video upload workflow](docs/images/video-upload-workflow.png)](docs/images/video-upload-workflow-large.png)
 
 ### Application Workflow
 
-```mermaid
-%%{init: {'theme': 'base', 'themeVariables': { 'background': '#ffffff' }}}%%
-flowchart LR
-    U[User]
-    FE[Frontend Dashboard]
-    API[Backend Flask API\n/api/*]
-    CFG[Read selected config]
-    INF[Inference Runtime]
-    BBOX[Draw bounding boxes]
-    DB[(PostgreSQL\nconfigs + classes + detections)]
-    MINIO[(MinIO\nvideos + models + thumbnails)]
-    RTSP[Live RTSP stream]
-    LLM[OpenAI-compatible LLM endpoint]
-
-    U --> FE
-    FE -->|GET /config| API
-    FE -->|POST /active_config| API
-    API --> CFG
-    CFG --> DB
-    API -->|Switch model_url + model_name| INF
-
-    FE -->|GET /video_feed| API
-    API --> INF
-    RTSP --> INF
-    MINIO -->|MP4/model assets| INF
-    INF --> BBOX
-    BBOX -->|detections + summary| API
-    API --> FE
-
-    FE -->|POST /chat| API
-    API -->|Context + SQL-backed answers| LLM
-    LLM --> API
-    API --> FE
-
-    linkStyle default stroke:#2563eb,stroke-width:2.5px
-```
+[![Application workflow](docs/images/application-workflow.png)](docs/images/application-workflow-large.png)
 
 ### Components
 
@@ -90,11 +96,24 @@ All models and video files are stored in MinIO rather than baked into container 
 | OpenShift/K8s | Files downloaded from MinIO to PVC by init container |
 | Local (Podman) | Files downloaded from MinIO at runtime via Python client |
 
-## Prerequisites
+## Requirements
+
+### Minimum hardware expectations
+
+- **KServe / Triton** (`RUNTIME_TYPE=kserve`, e.g. `make deploy` / `make deploy-gpu`): plan for **GPU-capable** worker nodes appropriate to your model-serving footprint; sizing depends on model and cluster policy.
+- **OpenVINO Model Server** (`RUNTIME_TYPE=openvino`, e.g. `make deploy-openvino`): targeted at **CPU-oriented** model serving—confirm node CPU/memory with your platform team.
+
+### Minimum software requirements
 
 - Podman + `podman-compose` for local container runs
 - Docker (optional alternative)
 - Helm (for Kubernetes/OpenShift deployment)
+- OpenShift Client CLI (`oc`) when deploying to or operating against an OpenShift cluster
+
+### Required user permissions
+
+- **Project / namespace** permissions sufficient to install the Helm release (workloads, routes, PVCs, Services, etc.).
+- **Cluster administrator** may be required when enabling OpenShift integrations that install SCCs or cluster-scoped bindings—see chart flags such as `openshift.scc.enabled`, `openshift.scc.name`, and `openshift.roleBinding.*`.
 
 ## Configuration
 
@@ -112,7 +131,7 @@ prompt for any missing OpenAI values, writing them to `.env`. Local workflows
 `.env` yourself before starting the backend so the chat stack can initialize.
 
 Which **`make deploy`** variant to use (GPU vs CPU model serving, Label Studio)
-is covered under **OpenShift/Kubernetes Deployment**.
+is covered under **[Deploy](#deploy)** → **Supported model-serving profiles**.
 
 Backend environment variables:
 - `PORT`: backend port (default `8888`)
@@ -122,9 +141,104 @@ Backend environment variables:
 Frontend runtime config (`app/frontend/public/env.js` or mounted in containers):
 - `API_URL`: backend base URL (example: `http://localhost:8888`)
 
-## Local Development (Podman Compose)
+## Deploy
 
-### Build and Run
+The sections below cover **cluster** deployment (build, push, Helm install) and **local** workflows. Configure OpenAI-related variables in `.env` first — see **[Configuration](#configuration)**.
+
+### Prerequisites
+
+- `.env` populated for OpenAI-compatible chat where used (see **Configuration**); cluster **`make deploy`** targets run `check-openai-env` interactively if values are missing.
+- Container registry access for **`make push`** and **`make build-push-data`** as configured in your environment.
+- **Requirements** satisfied for your target (Helm, `oc` for OpenShift, etc.).
+
+### Supported model-serving profiles
+
+All targets below use the same Helm chart and `.env` OpenAI settings; they differ
+only by model-serving runtime (`RUNTIME_TYPE`) and optional Label Studio.
+
+| Makefile target | Model serving | Label Studio |
+|-----------------|---------------|--------------|
+| `make deploy` or `make deploy-gpu` | KServe / Triton (`RUNTIME_TYPE=kserve`) | off |
+| `make deploy-openvino` | OpenVINO Model Server (`RUNTIME_TYPE=openvino`) | off |
+| `make deploy-labelstudio` | KServe / Triton | on |
+| `make deploy-openvino-labelstudio` | OpenVINO Model Server | on |
+
+### Installation steps
+
+1. **Clone this repository** to your workstation (use your fork or upstream URL as appropriate).
+
+2. **Configure the application** — copy `.env.example` to `.env` and set variables as described in **[Configuration](#configuration)**.
+
+3. **Build and push images**
+
+```bash
+# Build backend and frontend images
+make build
+
+# Push to registry
+make push
+
+# Build and push data loader image (contains model/video for MinIO upload)
+make build-push-data
+```
+
+4. **Install on the cluster** — pick a profile from **Supported model-serving profiles**, then run one of:
+
+```bash
+make deploy NAMESPACE=<your-namespace>
+```
+
+```bash
+make deploy-openvino NAMESPACE=<your-namespace>
+```
+
+```bash
+make deploy-labelstudio NAMESPACE=<your-namespace>
+```
+
+```bash
+make deploy-openvino-labelstudio NAMESPACE=<your-namespace>
+```
+
+5. **Operate and tune** — see **Deployment workflow**, **Helm values**, and OpenShift-specific chart options below.
+
+### Deployment workflow
+
+1. **MinIO** starts (from `ai-architecture-charts` dependency)
+2. **Backend Pod Init Container 1** (`upload-data`): Uploads model/video to MinIO
+3. **Backend Pod Init Container 2** (`download-data`): Downloads files from MinIO to PVC
+4. **Backend** starts with `MINIO_ENABLED=false`, reads from PVC paths
+5. **Frontend** connects to backend API
+
+### Helm values
+
+Override settings (from the repository root; chart path matches **`HELM_CHART`** in the root **`Makefile`**):
+
+```bash
+export HELM_CHART=$(grep '^HELM_CHART ?=' Makefile | sed 's/^HELM_CHART ?= //')
+helm upgrade multimodal-monitoring "$HELM_CHART" \
+  --set frontend.apiUrl=/api \
+  --set backend.corsOrigins=http://your-frontend-host \
+  --set storage.size=2Gi
+```
+
+OpenShift-specific options are included in the chart:
+- Frontend Route: `openshift.route.enabled` and optional `openshift.route.host`
+- Backend Route: `openshift.backendRoute.enabled` and optional `openshift.backendRoute.host`
+- Label Studio Route: `labelStudio.enabled`, `labelStudio.route.enabled`, `labelStudio.route.host`
+- Shared Route host (same host for frontend + backend): `openshift.sharedHost`
+- NetworkPolicy: `openshift.networkPolicy.enabled`
+- SCC/RoleBinding: `openshift.scc.enabled`, `openshift.scc.name`, `openshift.roleBinding.*`
+
+### Undeploy
+
+```bash
+make undeploy NAMESPACE=<your-namespace>
+```
+
+### Local Development (Podman Compose)
+
+#### Build and Run
 
 ```bash
 make local-build-up
@@ -137,28 +251,28 @@ This starts:
 4. **frontend** - React app (port 3000)
 5. **Label Studio** - Annotation UI backed by the same PostgreSQL + MinIO stack (port 8082)
 
-### Run Without Rebuild
+#### Run Without Rebuild
 
 ```bash
 make local-up
 ```
 
-### Stop
+#### Stop
 
 ```bash
 make local-down
 ```
 
-### Access
+#### Access
 
 - Frontend: http://localhost:3000
 - Backend API: http://localhost:8888/api/
 - MinIO Console: http://localhost:9001 (login: `minioadmin` / `minioadmin`)
 - Label Studio: http://localhost:8082
 
-## Local Development (No Containers)
+### Local Development (No Containers)
 
-### Backend
+#### Backend
 
 ```bash
 make dev-backend
@@ -166,7 +280,7 @@ make dev-backend
 
 Note: Requires model and video files in `app/models/` and `app/data/` directories.
 
-### Frontend
+#### Frontend
 
 ```bash
 make dev-frontend
@@ -190,84 +304,6 @@ To train a YOLO model for badge detection (or other object classes) using your o
 
 The `training/` folder includes an example dataset and a [detailed README](training/README.md) with the full training process, notebook steps, and dataset requirements.
 
-## OpenShift/Kubernetes Deployment
-
-Configure OpenAI-related variables in `.env` first — see **Configuration**.
-
-### Build and Push Images
-
-```bash
-# Build backend and frontend images
-make build
-
-# Push to registry
-make push
-
-# Build and push data loader image (contains model/video for MinIO upload)
-make build-push-data
-```
-
-### Deploy
-
-All targets below use the same Helm chart and `.env` OpenAI settings; they differ
-only by model-serving runtime (`RUNTIME_TYPE`) and optional Label Studio.
-
-| Makefile target | Model serving | Label Studio |
-|-----------------|---------------|--------------|
-| `make deploy` or `make deploy-gpu` | KServe / Triton (`RUNTIME_TYPE=kserve`) | off |
-| `make deploy-openvino` | OpenVINO Model Server (`RUNTIME_TYPE=openvino`) | off |
-| `make deploy-labelstudio` | KServe / Triton | on |
-| `make deploy-openvino-labelstudio` | OpenVINO Model Server | on |
-
-```bash
-make deploy NAMESPACE=<your-namespace>
-```
-
-```bash
-make deploy-openvino NAMESPACE=<your-namespace>
-```
-
-```bash
-make deploy-labelstudio NAMESPACE=<your-namespace>
-```
-
-```bash
-make deploy-openvino-labelstudio NAMESPACE=<your-namespace>
-```
-
-### Undeploy
-
-```bash
-make undeploy NAMESPACE=<your-namespace>
-```
-
-### Deployment Workflow
-
-1. **MinIO** starts (from `ai-architecture-charts` dependency)
-2. **Backend Pod Init Container 1** (`upload-data`): Uploads model/video to MinIO
-3. **Backend Pod Init Container 2** (`download-data`): Downloads files from MinIO to PVC
-4. **Backend** starts with `MINIO_ENABLED=false`, reads from PVC paths
-5. **Frontend** connects to backend API
-
-### Helm Values
-
-Override settings:
-
-```bash
-helm upgrade ppe-compliance-monitor deploy/helm/ppe-compliance-monitor \
-  --set frontend.apiUrl=/api \
-  --set backend.corsOrigins=http://your-frontend-host \
-  --set storage.size=2Gi
-```
-
-OpenShift-specific options are included in the chart:
-- Frontend Route: `openshift.route.enabled` and optional `openshift.route.host`
-- Backend Route: `openshift.backendRoute.enabled` and optional `openshift.backendRoute.host`
-- Label Studio Route: `labelStudio.enabled`, `labelStudio.route.enabled`, `labelStudio.route.host`
-- Shared Route host (same host for frontend + backend): `openshift.sharedHost`
-- NetworkPolicy: `openshift.networkPolicy.enabled`
-- SCC/RoleBinding: `openshift.scc.enabled`, `openshift.scc.name`, `openshift.roleBinding.*`
-
 ## API Endpoints
 
 | Endpoint | Method | Description |
@@ -285,3 +321,9 @@ curl -X POST http://localhost:8888/ask_question \
   -H 'Content-Type: application/json' \
   -d '{"question": "How many people are detected?"}'
 ```
+
+## Tags
+
+* **Product:** OpenShift AI (optional deployment target)
+* **Use case:** Multimodal monitoring, video analytics, object detection
+* **Business challenge:** Workplace safety and operational visibility

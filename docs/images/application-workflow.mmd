@@ -1,0 +1,34 @@
+%%{init: {'theme': 'base', 'themeVariables': { 'background': '#ffffff' }}}%%
+flowchart LR
+    U[User]
+    FE[Frontend Dashboard]
+    API[Backend Flask API\n/api/*]
+    CFG[Read selected config]
+    INF[Inference Runtime]
+    BBOX[Draw bounding boxes]
+    DB[(PostgreSQL\nconfigs + classes + detections)]
+    MINIO[(MinIO\nvideos + models + thumbnails)]
+    RTSP[Live RTSP stream]
+    LLM[OpenAI-compatible LLM endpoint]
+
+    U --> FE
+    FE -->|GET /config| API
+    FE -->|POST /active_config| API
+    API --> CFG
+    CFG --> DB
+    API -->|Switch model_url + model_name| INF
+
+    FE -->|GET /video_feed| API
+    API --> INF
+    RTSP --> INF
+    MINIO -->|MP4/model assets| INF
+    INF --> BBOX
+    BBOX -->|detections + summary| API
+    API --> FE
+
+    FE -->|POST /chat| API
+    API -->|Context + SQL-backed answers| LLM
+    LLM --> API
+    API --> FE
+
+    linkStyle default stroke:#2563eb,stroke-width:2.5px
