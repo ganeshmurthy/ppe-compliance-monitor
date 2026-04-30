@@ -1,0 +1,16 @@
+%%{init: {'theme': 'base', 'themeVariables': { 'background': '#ffffff' }}}%%
+flowchart LR
+    U[User]
+    FE[Frontend Config Page]
+    API[Backend API\nPOST /api/config/upload]
+    MINIO[(MinIO config bucket)]
+    DB[(PostgreSQL app_config)]
+
+    U --> FE
+    FE -->|Select MP4 file + multipart/form-data upload| API
+    API -->|Store uploads/thumbnails| MINIO
+    API -->|Return s3://config/uploads/<filename>| FE
+    FE -->|Create source with video_source| API
+    API -->|Save source config| DB
+
+    linkStyle default stroke:#2563eb,stroke-width:2.5px
