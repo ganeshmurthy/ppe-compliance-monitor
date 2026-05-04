@@ -1,0 +1,117 @@
+{{- if .Values.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "jupyter-training.fullname" . }}
+  labels:
+    {{- include "jupyter-training.labels" . | nindent 4 }}
+    app.kubernetes.io/component: jupyter
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels:
+      {{- include "jupyter-training.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: jupyter
+  template:
+    metadata:
+      annotations:
+        checksum/jupyter-config: {{ include "jupyter-training.jupyterConfigChecksum" . }}
+      labels:
+        {{- include "jupyter-training.labels" . | nindent 8 }}
+        app.kubernetes.io/component: jupyter
+    spec:
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: jupyter
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Ensure root_dir exists; re-exec image entrypoint. OpenShift: PVC at /home/jovyan/work may be EACCES → isdir false → Jupyter "No such directory".
+          command:
+            - /bin/bash
+            - -lc
+            - >
+                set -e;
+                mkdir -p {{ .Values.notebookRootDir | quote }};
+                {{- if .Values.trainingExample.seedOnStartup }}
+                BUNDLE=/opt/bundled-training/training;
+                mkdir -p {{ .Values.notebookRootDir | quote }}/training;
+                if [ ! -e {{ .Values.notebookRootDir | quote }}/training/yolo_training.ipynb ] && [ -f "$BUNDLE/yolo_training.ipynb" ]; then
+                  cp -a "$BUNDLE"/. {{ .Values.notebookRootDir | quote }}/training/;
+                fi;
+                if [ -w /home/jovyan/work ]; then
+                  mkdir -p /home/jovyan/work/training;
+                  if [ ! -e /home/jovyan/work/training/yolo_training.ipynb ] && [ -f "$BUNDLE/yolo_training.ipynb" ]; then
+                    cp -a "$BUNDLE"/. /home/jovyan/work/training/ || true;
+                  fi;
+                fi;
+                {{- end }}
+                {{- if ne .Values.notebookRootDir "/home/jovyan/work" }}
+                ln -snf /home/jovyan/work {{ printf "%s/pvc-workspace" .Values.notebookRootDir | quote }};
+                {{- end }}
+                exec /usr/bin/tini -g -- /usr/local/bin/start.sh start-notebook.py
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          ports:
+            - containerPort: {{ .Values.service.port }}
+              name: http
+          env:
+            # Arbitrary UID (OpenShift) can write under /tmp; the PVC is often not writable for ~/.local without matching fsGroup.
+            - name: HOME
+              value: {{ .Values.jupyterHome | quote }}
+            - name: JUPYTER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.existingSecretName | default (printf "%s-auth" (include "jupyter-training.fullname" .)) | quote }}
+                  key: token
+            - name: JUPYTER_PORT
+              value: {{ .Values.service.port | quote }}
+            # CLI root_dir beats merged conda config; avoids Lab terminal cwd under /home/jovyan/... (EACCES on resolve() for arbitrary UID).
+            {{- $rootArg := printf "--ServerApp.root_dir=%s" .Values.notebookRootDir }}
+            {{- $extra := .Values.notebookArgsExtra | default "" }}
+            - name: NOTEBOOK_ARGS
+              value: {{ trim (printf "%s %s" $rootArg $extra) | quote }}
+          startupProbe:
+            httpGet:
+              path: /
+              port: http
+            failureThreshold: 30
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: workspace
+              mountPath: /home/jovyan/work
+            # Do not mount under jupyterHome (/tmp/...): kube creates parent dirs root:root 0755 → mkdir notebooks fails for arbitrary UID.
+            - name: jupyter-server-config
+              mountPath: /etc/jupyter/jupyter_server_config.json
+              subPath: jupyter_server_config.json
+              readOnly: true
+            - name: jupyter-server-config
+              mountPath: /etc/jupyter/jupyter_lab_config.json
+              subPath: jupyter_lab_config.json
+              readOnly: true
+      volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: {{ include "jupyter-training.fullname" . }}-workspace
+        - name: jupyter-server-config
+          configMap:
+            name: {{ include "jupyter-training.fullname" . }}-jupyter-server
+{{- end }}

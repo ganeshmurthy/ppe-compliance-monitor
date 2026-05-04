@@ -297,7 +297,7 @@ To train a YOLO model for badge detection (or other object classes) using your o
 
 2. **Run the training notebook:**
    ```bash
-   cd training/example
+   cd training
    jupyter lab
    ```
    Then open `yolo_training.ipynb` and run the cells in order.

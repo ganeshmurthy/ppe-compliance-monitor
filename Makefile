@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help local-up local-build-up local-down build push deploy deploy-cpu deploy-gpu deploy-openvino-labelstudio deploy-labelstudio undeploy dev-backend dev-frontend local-build build-push-data kill-ports check-openai-env eval eval-k8s init-eval-db
+.PHONY: help local-up local-build-up local-down build push deploy deploy-cpu deploy-gpu deploy-openvino-labelstudio deploy-labelstudio undeploy dev-backend dev-frontend local-build build-push-data build-jupyter-training push-jupyter-training kill-ports check-openai-env eval eval-k8s init-eval-db
 help:
 	@echo "Available targets:"
 	@echo "  local-up   - Start local stack with Podman Compose"
@@ -11,6 +11,8 @@ help:
 	@echo "  deploy     - Deploy to OpenShift with OpenVINO CPU runtime (default)"
 	@echo "  deploy-cpu - Deploy with CPU runtime (OpenVINO Model Server)"
 	@echo "  deploy-gpu - Deploy with GPU runtime (kserve/Triton)"
+	@echo "  build-jupyter-training - Build Jupyter training image (notebook under ~/work/training)"
+	@echo "  push-jupyter-training - Push Jupyter training image (after build-jupyter-training)"
 	@echo "  deploy-openvino-labelstudio - Deploy OpenVINO runtime with Label Studio enabled"
 	@echo "  deploy-labelstudio - Deploy and enable Label Studio"
 	@echo "  undeploy   - Remove manifests from OpenShift"
@@ -40,6 +42,7 @@ IMAGE_REPOSITORY := $(if $(IMAGE_REGISTRY),$(IMAGE_REGISTRY)/,)$(IMAGE_NAME)
 BACKEND_IMAGE := $(IMAGE_REPOSITORY)-backend:$(IMAGE_TAG)
 FRONTEND_IMAGE := $(IMAGE_REPOSITORY)-frontend:$(IMAGE_TAG)
 DATA_IMAGE := $(IMAGE_REPOSITORY)-data:$(IMAGE_TAG)
+JUPYTER_TRAINING_IMAGE := $(IMAGE_REPOSITORY)-jupyter-training:$(IMAGE_TAG)
 LOCAL_BACKEND_IMAGE ?= ppe-compliance-monitor-backend:local
 LOCAL_FRONTEND_IMAGE ?= ppe-compliance-monitor-frontend:local
 LOCAL_DATA_IMAGE ?= ppe-compliance-monitor-data:local
@@ -105,6 +108,17 @@ push:
 build-push-data:
 	podman build --platform $(PLATFORM_RELEASE) -t $(DATA_IMAGE) -f app/data-image/Dockerfile app
 	podman push $(DATA_IMAGE)
+
+build-jupyter-training:
+	podman build --platform $(PLATFORM_RELEASE) -t $(JUPYTER_TRAINING_IMAGE) -f training/jupyter-training/Dockerfile training
+
+push-jupyter-training:
+	@if podman image exists $(JUPYTER_TRAINING_IMAGE); then \
+		podman push $(JUPYTER_TRAINING_IMAGE); \
+	else \
+		echo "Image $(JUPYTER_TRAINING_IMAGE) not found. Run 'make build-jupyter-training' first."; \
+		exit 1; \
+	fi
 
 deploy: check-openai-env
 	@. ./.env; \

@@ -16,3 +16,8 @@ dependencies:
     repository: file://../label-studio
     alias: labelStudio
     condition: labelStudio.enabled
+  - name: jupyter-training
+    version: 0.1.0
+    repository: file://../jupyter-training
+    alias: jupyter-training
+    condition: jupyter-training.enabled

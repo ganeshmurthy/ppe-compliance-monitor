@@ -1,0 +1,62 @@
+enabled: false
+nameOverride: ""
+fullnameOverride: ""
+
+replicas: 1
+
+# Writable home for Jupyter/IPython dotfiles/runtime (OpenShift arbitrary UID). /tmp avoids PVC permission issues.
+jupyterHome: /tmp/jupyter-home
+# Server root (must be writable + listable by arbitrary UID). PVC mount is often not; then use tmp + symlink below.
+# Set to /home/jovyan/work when podSecurityContext.fsGroup matches your namespace supplemental range (see NOTES).
+notebookRootDir: /tmp/jupyter-home/notebooks
+# Optional extra CLI args for start-notebook.py (omit ServerApp.*; avoid `*` unquoted — shell glob breaks parsing).
+notebookArgsExtra: ""
+
+# JupyterLab Git UI + server extension (needs git on PATH). Off by default; set enabled: true to turn back on.
+jupyterGit:
+  enabled: false
+
+# Copy bundled notebook from image path /opt/bundled-training/training/ into the notebook root and PVC when missing.
+trainingExample:
+  seedOnStartup: true
+
+image:
+  repository: quay.io/jupyter/scipy-notebook
+  tag: python-3.11
+  pullPolicy: IfNotPresent
+
+service:
+  port: 8888
+
+route:
+  enabled: true
+  host: ""
+  tls:
+    enabled: true
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+
+# Small CPU cap for tight clusters; 4Gi fits Jupyter + PyTorch + modest YOLO training better than 2Gi.
+resources:
+  requests:
+    cpu: 500m
+    memory: 1Gi
+  limits:
+    cpu: "1"
+    memory: 4Gi
+
+# Omit on OpenShift (restricted-v2 rejects fsGroup 100). Uncomment on vanilla k8s if the notebook cannot write to the PVC.
+# podSecurityContext:
+#   fsGroup: 100
+
+workspace:
+  storage:
+    size: 1Gi
+    # Optional; required on clusters with no default StorageClass (PVC stays Pending otherwise).
+    # Example: gp3, managed-csi, thin. Check: oc get storageclass
+    # storageClassName: gp3
+
+auth:
+  existingSecretName: ""
+  # Plain-token Secret key must be `token` (used as JUPYTER_TOKEN). Override for anything beyond quick demos.
+  token: changeme

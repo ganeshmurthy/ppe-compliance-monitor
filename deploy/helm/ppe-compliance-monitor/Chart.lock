@@ -5,5 +5,8 @@ dependencies:
 - name: label-studio
   repository: file://../label-studio
   version: 0.1.0
-digest: sha256:b8a1e4ce2e2df4b0c8903ca7bf137a7c9bd5757fcba7506db940c75b37fa0b83
-generated: "2026-03-25T14:42:22.196577-04:00"
+- name: jupyter-training
+  repository: file://../jupyter-training
+  version: 0.1.0
+digest: sha256:0c7fd1612d7ee4330da49e59b971afd8ee515bfeb612f03c94c8ee6110f31591
+generated: "2026-05-01T16:10:35.373287348-04:00"
