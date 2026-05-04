@@ -16,6 +16,12 @@ spec:
       parameters:
         - name: openshift.sharedHost
           value: "ppe-{{ .Values.tenant.name }}-{{ .Values.ppe.namespace }}.{{ .Values.deployer.domain }}"
+        # Helm --set overrides spec.source.helm.values: OVMS (CPU) path, not KServe/Triton.
+        - name: modelServing.runtimeType
+          value: openvino
+        # Redundant if runtimeType stays openvino; protects if runtimeType is ever switched to kserve.
+        - name: modelServing.kserve.gpu.enabled
+          value: "false"
       values: |
 {{ toYaml .Values.ppe.values | nindent 12 }}
   destination:
