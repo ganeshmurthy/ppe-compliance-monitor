@@ -8,7 +8,7 @@ backend:
       memory: 512Mi
     limits:
       cpu: "1"
-      memory: 2Gi
+      memory: 4Gi
   # Config storage: MinIO (config bucket) when enabled - enables horizontal scaling
   configStorage:
     enabled: true
