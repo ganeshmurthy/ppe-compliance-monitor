@@ -18,10 +18,13 @@ spec:
         {{- include "ppe-compliance-monitor.labels" . | nindent 8 }}
         app.kubernetes.io/component: backend
     spec:
-      {{- if not .Values.videoStream.streamUrl }}
+      {{- $waitVideo := not .Values.videoStream.streamUrl }}
+      {{- $waitMcp := and .Values.postgresql.enabled .Values.postgresMcp.enabled }}
+      {{- if or $waitVideo $waitMcp }}
       initContainers:
+        {{- if $waitVideo }}
         - name: wait-for-video-stream
-          image: busybox:1.36
+          image: "{{ .Values.initUtils.busybox.repository }}:{{ .Values.initUtils.busybox.tag }}"
           command:
             - /bin/sh
             - -c
@@ -32,6 +35,21 @@ spec:
                 sleep 2
               done
               echo "Video stream is ready"
+        {{- end }}
+        {{- if $waitMcp }}
+        - name: wait-for-postgres-mcp
+          image: "{{ .Values.initUtils.busybox.repository }}:{{ .Values.initUtils.busybox.tag }}"
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Waiting for postgres-mcp on port {{ .Values.postgresMcp.port }}..."
+              until nc -z {{ include "ppe-compliance-monitor.fullname" . }}-postgres-mcp {{ .Values.postgresMcp.port }}; do
+                echo "postgres-mcp not ready, retrying in 2s..."
+                sleep 2
+              done
+              echo "postgres-mcp is ready"
+        {{- end }}
       {{- end }}
       containers:
         - name: backend

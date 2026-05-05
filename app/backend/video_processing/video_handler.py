@@ -337,7 +337,6 @@ class VideoHandler:
 
     def frame_generator(self):
         time.sleep(1)
-        current_epoch = self._epoch
         frame_interval = self._consumer.frame_interval
         last_yield_time = time.perf_counter()
         try:
@@ -346,11 +345,14 @@ class VideoHandler:
                 if result is None:
                     continue
 
-                if result.epoch != current_epoch:
+                # Use live ``self._epoch``: the MJPEG connection can outlive an older
+                # snapshot if the browser is slow to reconnect after ``active_config``.
+                # A frozen epoch would drop every frame after a switch (black video).
+                if result.epoch != self._epoch:
                     log.debug(
-                        "Dropping stale inference result (epoch %d != %d)",
+                        "Dropping stale inference result (epoch %d != current %d)",
                         result.epoch,
-                        current_epoch,
+                        self._epoch,
                     )
                     continue
 
@@ -366,7 +368,7 @@ class VideoHandler:
                 if chunk is None:
                     continue
 
-                self._tracker.submit(result.detections, epoch=current_epoch)
+                self._tracker.submit(result.detections, epoch=self._epoch)
 
                 elapsed = time.perf_counter() - last_yield_time
                 sleep_time = frame_interval - elapsed
