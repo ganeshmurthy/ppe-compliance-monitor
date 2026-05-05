@@ -38,6 +38,8 @@ spec:
           image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
           imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
           command: ["python", "/backend/app.py"]
+          resources:
+            {{- toYaml .Values.backend.resources | nindent 12 }}
           ports:
             - containerPort: {{ .Values.backend.port }}
               name: http
