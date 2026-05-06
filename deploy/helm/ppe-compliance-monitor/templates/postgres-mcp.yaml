@@ -21,7 +21,7 @@ spec:
     spec:
       initContainers:
         - name: wait-for-postgresql
-          image: busybox:1.36
+          image: "{{ .Values.initUtils.busybox.repository }}:{{ .Values.initUtils.busybox.tag }}"
           command:
             - /bin/sh
             - -c

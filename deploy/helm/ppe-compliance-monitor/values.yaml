@@ -1,3 +1,10 @@
+# Init/wait images that previously hit Docker Hub anonymous rate limits (postgres, busybox).
+# mirror.gcr.io/library/* serves Docker Hub official library images for pulls that bypass docker.io quotas.
+initUtils:
+  busybox:
+    repository: mirror.gcr.io/library/busybox
+    tag: "1.36"
+
 backend:
   replicas: 1
   port: 8888
@@ -84,6 +91,11 @@ videoStream:
     pullPolicy: IfNotPresent
   port: 8554
   path: live
+  # MediaMTX tuning (optional). Leave empty to use MediaMTX defaults:
+  # writeQueueSize → upstream sample default 512; udpReadBufferSize → 0 (OS UDP SO_RCVBUF).
+  mediamtx:
+    writeQueueSize: ""
+    udpReadBufferSize: ""
 
 # MinIO storage configuration for model and video files
 storage:
@@ -107,6 +119,10 @@ postgresql:
   password: "ppe_password"
   storage:
     size: 5Gi
+  image:
+    repository: mirror.gcr.io/library/postgres
+    tag: 16-alpine
+    pullPolicy: IfNotPresent
 
 labelStudio:
   enabled: true

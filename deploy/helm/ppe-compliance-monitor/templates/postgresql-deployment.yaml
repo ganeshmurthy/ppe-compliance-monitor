@@ -21,8 +21,8 @@ spec:
     spec:
       containers:
         - name: postgresql
-          image: docker.io/library/postgres:16-alpine
-          imagePullPolicy: IfNotPresent
+          image: "{{ .Values.postgresql.image.repository }}:{{ .Values.postgresql.image.tag }}"
+          imagePullPolicy: {{ .Values.postgresql.image.pullPolicy }}
           ports:
             - containerPort: 5432
               name: postgres

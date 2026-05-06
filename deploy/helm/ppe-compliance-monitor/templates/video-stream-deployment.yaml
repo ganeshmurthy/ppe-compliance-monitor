@@ -64,11 +64,20 @@ spec:
         - name: mediamtx
           image: "{{ .Values.videoStream.image.repository }}:{{ .Values.videoStream.image.tag }}"
           imagePullPolicy: {{ .Values.videoStream.image.pullPolicy }}
+          {{- $mtx := .Values.videoStream.mediamtx | default dict }}
+          {{- $wq := $mtx.writeQueueSize | default "" }}
+          {{- $ur := $mtx.udpReadBufferSize | default "" }}
+          {{- if or $wq $ur }}
           env:
+            {{- if $wq }}
             - name: MTX_WRITEQUEUESIZE
-              value: "2048"
+              value: {{ $wq | quote }}
+            {{- end }}
+            {{- if $ur }}
             - name: MTX_UDPREADBUFFERSIZE
-              value: "4194304"
+              value: {{ $ur | quote }}
+            {{- end }}
+          {{- end }}
           ports:
             - containerPort: {{ .Values.videoStream.port }}
               name: rtsp
