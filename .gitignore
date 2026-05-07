@@ -41,6 +41,8 @@ custome_ppe.pt
 # YOLO training outputs (when running notebook locally)
 runs/
 yolo_dataset/
+# User-created archive for cluster upload (excluded from Jupyter training image via training/.dockerignore)
+training/upload.tar.gz
 
 
 # Jupyter notebook checkpoints
@@ -52,6 +54,7 @@ app/data/uploads/
 # Config uploads and thumbnails (local dev)
 data/config/
 deploy/helm/ppe-compliance-monitor/charts/label-studio-0.1.0.tgz
+deploy/helm/ppe-compliance-monitor/charts/jupyter-training-0.1.0.tgz
 
 # Eval prediction results (generated per run)
 app/evals/preds/*

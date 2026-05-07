@@ -1,0 +1,9 @@
+# Dataset stays out of the image: users pack training/upload/ into upload.tar.gz on the laptop,
+# upload that single file in JupyterLab (OpenShift), and extract it next to the notebook so upload/ appears there.
+upload
+upload/
+upload/**
+upload.tar.gz
+yolo_dataset/
+**/__pycache__/
+**/.ipynb_checkpoints/

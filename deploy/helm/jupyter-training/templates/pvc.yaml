@@ -1,0 +1,18 @@
+{{- if .Values.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "jupyter-training.fullname" . }}-workspace
+  labels:
+    {{- include "jupyter-training.labels" . | nindent 4 }}
+    app.kubernetes.io/component: jupyter
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- with .Values.workspace.storage.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.workspace.storage.size | quote }}
+{{- end }}

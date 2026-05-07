@@ -166,6 +166,42 @@ labelStudio:
     # Set your own long random key for production environments.
     secretKey: "ppe-compliance-monitor-labelstudio-secret"
 
+# JupyterLab (YOLO training notebook); workload data lives on PVC mounted at /home/jovyan/work
+jupyter-training:
+  enabled: true
+  image:
+    repository: quay.io/rh-ai-quickstart/ppe-compliance-monitor-jupyter-training
+    tag: latest
+    pullPolicy: Always
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "1"
+      memory: 4Gi
+  # Do not set podSecurityContext.fsGroup: 100 on OpenShift (restricted-v2); it blocks pod creation (PVC stays Pending: WaitForFirstConsumer).
+  # podSecurityContext:
+  #   fsGroup: 100
+  # jupyterHome defaults to /tmp/jupyter-home. notebookRootDir defaults to /tmp/jupyter-home/notebooks (writable on OCP); PVC is linked as pvc-workspace until fsGroup allows using /home/jovyan/work directly.
+  workspace:
+    storage:
+      size: 1Gi
+      # If the workspace PVC stays Pending, pick a class from `oc get storageclass` (no default SC on many clusters).
+      # storageClassName: gp3
+  route:
+    enabled: true
+    host: ""
+    tls:
+      enabled: true
+      termination: edge
+      insecureEdgeTerminationPolicy: Redirect
+  auth:
+    existingSecretName: ""
+    token: changeme
+  # jupyterGit.enabled: true  # re-enable Git in Lab; remove pip uninstall from training/jupyter-training/Dockerfile, rebuild image, ensure git on PATH
+  # trainingExample.seedOnStartup: false  # skip copying bundled training/yolo_training.ipynb into the notebook root / PVC
+
 # Postgres MCP server (read-only SSE access for the LLM agent)
 postgresMcp:
   enabled: true

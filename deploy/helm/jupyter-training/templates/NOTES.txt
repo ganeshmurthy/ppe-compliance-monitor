@@ -1,0 +1,17 @@
+{{- if .Values.enabled }}
+{{- $routeName := printf "%s-jupyter" .Release.Name | trunc 30 | trimSuffix "-" }}
+JupyterLab:
+{{- if .Values.route.host }}
+  https://{{ .Values.route.host }}
+{{- else }}
+  oc get route {{ $routeName }} -o jsonpath='{.spec.host}' ; echo
+{{- end }}
+
+Token: Secret {{ .Values.auth.existingSecretName | default (printf "%s-auth" (include "jupyter-training.fullname" .)) }} key `token` (JUPYTER_TOKEN).
+
+Notebooks and uploads persist on PVC {{ include "jupyter-training.fullname" . }}-workspace mounted at /home/jovyan/work .
+Bundled notebook: training/yolo_training.ipynb is copied into the Lab root on first start when trainingExample.seedOnStartup is true (also onto the PVC when writable).
+If that PVC stays Pending with WaitForFirstConsumer: the pod is not scheduling — oc describe rs -l app.kubernetes.io/name=jupyter-training (OpenShift often rejects podSecurityContext.fsGroup 100 under restricted-v2). Also ensure workspace.storage.storageClassName matches oc get storageclass when no default exists.
+If Jupyter reports No such directory for /home/jovyan/work: arbitrary UID often cannot stat the PVC (EACCES → isdir false). Default notebook root is /tmp/jupyter-home/notebooks with a symlink pvc-workspace → the PVC. To use the PVC as the root directly, set notebookRootDir: /home/jovyan/work and podSecurityContext.fsGroup to a group allowed for your namespace (see oc describe namespace / SCC supplementalGroups).
+jupyterlab-git: chart sets jupyterGit.enabled=false and ConfigMaps under /etc/jupyter, but the conda env still ships the extension enabled — use the training image build (pip uninstall jupyterlab-git) or set jupyterGit.enabled=true and ensure git on PATH when you want Git in Lab again.
+{{- end }}

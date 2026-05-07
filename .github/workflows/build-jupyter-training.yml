@@ -1,0 +1,29 @@
+name: Build and Push Jupyter Training Image
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'training/**'
+      - '.github/workflows/build-jupyter-training.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'training/**'
+  workflow_dispatch:
+
+jobs:
+  build:
+    uses: ./.github/workflows/reusable-docker-build.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      image_name: rh-ai-quickstart/ppe-compliance-monitor-jupyter-training
+      context: ./training
+      dockerfile: ./training/jupyter-training/Dockerfile
+    secrets:
+      QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
+      QUAY_PASSWORD: ${{ secrets.QUAY_PASSWORD }}
