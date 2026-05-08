@@ -93,6 +93,36 @@ The notebook uses **`WORKSPACE_ROOT = Path.cwd()`**. That directory must contain
 | **4. Generate Dataset YAML** | Writes **`data.yaml`** under **`OUTPUT_ROOT`**. |
 | **5. Train YOLO Model** | **`YOLO('yolov8n.pt').train(...)`** → **`runs/detect/badge-demo/weights/`**. |
 
+### What the notebook code is doing (brief details)
+
+1. **Section 1: Configuration and paths**
+   - Installs `ultralytics` in the notebook kernel.
+   - Reads `CLASSES` and `OUTPUT_ROOT` from environment variables if set; otherwise prompts with defaults.
+   - Converts class names into an indexed mapping (`0 -> Badge`, etc.) used in YOLO `data.yaml`.
+   - Resolves `WORKSPACE_ROOT = Path.cwd()` and defines `UPLOAD_ROOT = WORKSPACE_ROOT / "upload"`.
+   - Ensures upload staging folders exist (`train_images`, `train_labels`, `val_images`, `val_labels`) and prints resolved paths.
+
+2. **Section 2: Build YOLO dataset tree and copy inputs**
+   - Creates YOLO directory structure under `OUTPUT_ROOT`:
+     `images/train`, `images/val`, `labels/train`, `labels/val`.
+   - Scans your `upload/` folders and copies image files and label files into YOLO layout.
+   - Uses file extension filtering and keeps original filenames so image-label base names can be matched later.
+
+3. **Section 3: Label matching / negative examples**
+   - Compares images and labels by base filename in each split.
+   - For any image without a matching label file, creates an **empty** `.txt` label.
+   - This preserves negative samples (images with no objects) and prevents training errors from missing labels.
+
+4. **Section 4: Generate `data.yaml`**
+   - Writes dataset metadata file at `OUTPUT_ROOT/data.yaml`.
+   - Sets train/val image directories and the number of classes.
+   - Emits class index-to-name mapping from `CLASSES`, which YOLO uses during training and metrics reporting.
+
+5. **Section 5: Train YOLO**
+   - Loads pretrained weights with `YOLO("yolov8n.pt")` (transfer learning starting point).
+   - Calls `model.train(...)` using the generated `data.yaml` and notebook defaults (for example `epochs=100`, `imgsz=640`, run name `badge-demo`).
+   - Writes outputs under `runs/detect/badge-demo/`, including checkpoints (`best.pt`, `last.pt`) and training artifacts/plots.
+
 ---
 
 ## Running the notebook: two approaches
