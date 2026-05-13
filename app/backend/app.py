@@ -98,6 +98,8 @@ def latest_info():
         (video_handler.video_source or "")[:200] if video_handler.video_source else ""
     )
 
+    alert_results = _evaluate_alerts(_cfg) if _cfg is not None else []
+
     return jsonify(
         {
             "description": desc,
@@ -105,6 +107,7 @@ def latest_info():
             "inference_ready": True,
             "active_config_id": _cfg,
             "video_source": _video,
+            "alerts": alert_results,
         }
     )
 
@@ -201,12 +204,12 @@ def create_alert():
     except (ValueError, TypeError):
         return jsonify({"error": "app_config_id must be an integer"}), 400
 
-    classes_info = None
     raw = get_classes_for_config(app_config_id)
-    if raw:
-        classes_info = [
-            {"name": v["name"], "trackable": v["trackable"]} for v in raw.values()
-        ]
+    classes_info = (
+        [{"name": v["name"], "trackable": v["trackable"]} for v in raw.values()]
+        if raw
+        else None
+    )
 
     alert_id = str(uuid.uuid4())
     entry = AlertEntry(
@@ -235,16 +238,13 @@ def create_alert():
     return jsonify(entry.model_dump()), 201
 
 
-@api.route("/alerts/<int:app_config_id>", methods=["GET"])
-def get_alerts(app_config_id):
-    """Return all alerts for an app_config_id with live SQL query results.
-
-    Path parameters:
-        app_config_id (int): The app configuration whose alerts to retrieve.
-    """
+def _evaluate_alerts(app_config_id: int) -> list[dict]:
+    """Run each alert's SQL query and return dicts with live results."""
     entries = list(alerts.configs.get(app_config_id, {}).values())
+    if not entries:
+        return []
 
-    async def _fetch_results():
+    async def _fetch():
         async def _query_one(entry: AlertEntry) -> dict:
             alert_data = entry.model_dump()
             if entry.sql_query and entry.status == "done":
@@ -259,8 +259,81 @@ def get_alerts(app_config_id):
 
         return list(await asyncio.gather(*[_query_one(e) for e in entries]))
 
-    results = asyncio.run(_fetch_results())
-    return jsonify(results)
+    return asyncio.run(_fetch())
+
+
+@api.route("/alerts/<int:app_config_id>", methods=["GET"])
+def get_alerts(app_config_id):
+    """Return all alerts for an app_config_id with live SQL query results.
+
+    Path parameters:
+        app_config_id (int): The app configuration whose alerts to retrieve.
+    """
+    return jsonify(_evaluate_alerts(app_config_id))
+
+
+@api.route("/alerts/<int:app_config_id>/<string:alert_id>", methods=["PATCH"])
+def update_alert(app_config_id, alert_id):
+    """Update an alert's rule and/or severity for a config."""
+    config_alerts = alerts.configs.get(app_config_id, {})
+    entry = config_alerts.get(alert_id)
+    if not entry:
+        return jsonify({"error": "Alert not found"}), 404
+
+    data = request.get_json(silent=True) or {}
+    next_rule = (data.get("rule") or "").strip()
+    has_rule_update = "rule" in data
+    has_severity_update = "severity" in data
+
+    if not has_rule_update and not has_severity_update:
+        return jsonify({"error": "Provide 'rule' and/or 'severity' to update."}), 400
+
+    if has_rule_update and not next_rule:
+        return jsonify({"error": "Field 'rule' cannot be empty."}), 400
+
+    if has_severity_update:
+        severity = data.get("severity")
+        if severity not in ("low", "medium", "high"):
+            return (
+                jsonify({"error": "severity must be 'low', 'medium', or 'high'."}),
+                400,
+            )
+        entry.severity = severity
+
+    if has_rule_update:
+        raw = get_classes_for_config(app_config_id)
+        classes_info = (
+            [{"name": v["name"], "trackable": v["trackable"]} for v in raw.values()]
+            if raw
+            else None
+        )
+        entry.rule = next_rule
+        entry.status = "processing"
+        entry.error = None
+        try:
+            entry.sql_query = llm_alert.create_alert(
+                alert_text=next_rule,
+                app_config_id=app_config_id,
+                classes_info=classes_info,
+            )
+            entry.status = "done"
+        except Exception as e:
+            log.exception(f"Alert update pipeline failed for {alert_id}: {e}")
+            entry.status = "error"
+            entry.error = str(e)
+            return jsonify({"error": f"Alert update failed: {e}"}), 500
+
+    return jsonify(entry.model_dump())
+
+
+@api.route("/alerts/<int:app_config_id>/<string:alert_id>", methods=["DELETE"])
+def delete_alert(app_config_id, alert_id):
+    """Delete an alert for a specific app config."""
+    config_alerts = alerts.configs.get(app_config_id, {})
+    if alert_id not in config_alerts:
+        return jsonify({"error": "Alert not found"}), 404
+    del config_alerts[alert_id]
+    return jsonify({"message": "Alert deleted"})
 
 
 def _parse_classes(value: str | dict) -> tuple[dict, list[tuple[int, str, bool, bool]]]:
