@@ -67,9 +67,9 @@ def _load_app_module(monkeypatch):
     db_mod.count_app_configs = lambda: 1
     db_mod.execute_query = lambda _query: [{"count": 0}]
     db_mod.get_all_configs = lambda: []
-    db_mod.get_classes_for_config = (
-        lambda _app_config_id: {"0": {"name": "Person", "trackable": True}}
-    )
+    db_mod.get_classes_for_config = lambda _app_config_id: {
+        "0": {"name": "Person", "trackable": True}
+    }
     db_mod.get_config_by_id = lambda _cid: None
     db_mod.insert_config = lambda *_args, **_kwargs: 1
     db_mod.delete_config = lambda *_args, **_kwargs: False
@@ -99,7 +99,9 @@ def _load_app_module(monkeypatch):
 
     video_handler_mod = types.ModuleType("video_processing.video_handler")
     video_handler_mod.VideoHandler = _DummyVideoHandler
-    monkeypatch.setitem(sys.modules, "video_processing.video_handler", video_handler_mod)
+    monkeypatch.setitem(
+        sys.modules, "video_processing.video_handler", video_handler_mod
+    )
 
     alert_graph_mod = types.ModuleType("alert.graph")
     alert_graph_mod.LLMAlert = _DummyLLMAlert
@@ -118,7 +120,9 @@ def _seed_alert(app_module, *, app_config_id=7, alert_id="a1"):
         status="done",
         sql_query="SELECT 1",
     )
-    app_module.alerts = app_module.AlertsStore(configs={app_config_id: {alert_id: entry}})
+    app_module.alerts = app_module.AlertsStore(
+        configs={app_config_id: {alert_id: entry}}
+    )
     return entry
 
 
@@ -142,7 +146,9 @@ def test_patch_alert_updates_rule_and_severity(monkeypatch):
     assert payload["severity"] == "high"
     assert payload["rule"] == "alert when more than 3 people have no vests"
     assert payload["status"] == "done"
-    assert "SELECT 'alert when more than 3 people have no vests'" in payload["sql_query"]
+    assert (
+        "SELECT 'alert when more than 3 people have no vests'" in payload["sql_query"]
+    )
 
 
 def test_patch_alert_rejects_invalid_severity(monkeypatch):
