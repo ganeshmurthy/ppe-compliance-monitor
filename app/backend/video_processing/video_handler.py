@@ -2,6 +2,7 @@ import atexit
 import queue
 import threading
 import time
+import uuid
 from collections import Counter, defaultdict, deque
 
 import cv2
@@ -52,6 +53,15 @@ class VideoHandler:
         )
         self._epoch: int = 0
 
+        # Client registry for broadcasting video to multiple connected clients.
+        # Each client gets its own queue to receive MJPEG chunks.
+        self._clients: dict[str, queue.Queue] = {}
+        self._clients_lock = threading.Lock()
+
+        # Broadcaster thread that pulls from inference queue, draws/encodes once,
+        # and sends the same frame to all registered clients.
+        self._broadcaster: threading.Thread | None = None
+
         self.init_setup()
 
     def init_setup(self):
@@ -80,6 +90,53 @@ class VideoHandler:
         self._queue_monitor.start()
 
         atexit.register(self._shutdown)
+
+    def register_client(self) -> tuple[str, queue.Queue]:
+        """Register a new client for video streaming.
+
+        Returns:
+            tuple: (client_id, client_queue) where client_queue receives MJPEG chunks
+        """
+        client_id = str(uuid.uuid4())
+        # Queue size of 30 frames = ~1 second buffer at 30 FPS
+        # If client can't keep up, old frames are dropped to stay near real-time
+        client_queue = queue.Queue(maxsize=30)
+
+        with self._clients_lock:
+            self._clients[client_id] = client_queue
+            client_count = len(self._clients)
+
+        log.info(f"Client {client_id} registered. Total clients: {client_count}")
+        return client_id, client_queue
+
+    def unregister_client(self, client_id: str) -> None:
+        """Unregister a client when they disconnect.
+
+        Args:
+            client_id: The unique identifier for the client to remove
+        """
+        with self._clients_lock:
+            if client_id in self._clients:
+                del self._clients[client_id]
+                client_count = len(self._clients)
+                log.info(
+                    f"Client {client_id} unregistered. Remaining clients: {client_count}"
+                )
+
+                # If this was the last client, stop streaming to save resources
+                if client_count == 0 and self._is_streaming:
+                    log.info("Last client disconnected. Stopping stream.")
+                    # Schedule stop_streaming to avoid holding the lock
+                    threading.Thread(target=self.stop_streaming, daemon=True).start()
+
+    def get_active_client_count(self) -> int:
+        """Get the number of currently connected clients.
+
+        Returns:
+            int: Number of active clients
+        """
+        with self._clients_lock:
+            return len(self._clients)
 
     def _log_queue_sizes(self) -> None:
         while not self._stop_event.wait(timeout=2.0):
@@ -110,31 +167,83 @@ class VideoHandler:
             self._consumer.stop()
 
     def start_streaming(self, video_source: str, config_id: int):
+        """Start video streaming with the specified source and configuration.
+
+        Args:
+            video_source: Path to video file or RTSP URL
+            config_id: Database ID of the configuration to use
+
+        Note:
+            If already streaming the same config, this is a no-op.
+            If streaming a different config, the old stream is stopped first.
+        """
+        # If already streaming this exact config, nothing to do
+        if self._is_streaming and self._active_config_id == config_id:
+            log.info(f"Already streaming config_id={config_id}, skipping restart")
+            return
+
+        # Clear buffers for fresh start
         self._description_buffer.clear()
         self._description_vote_buffer.clear()
         self._stop_event.clear()
+
+        # Set video source and configuration
         self.video_source = video_source
         self._active_config_id = config_id
+
+        # Load detection classes for this configuration
         classes, include_in_counts, trackable, name_to_id = (
             get_detection_classes_pipeline_maps(config_id)
         )
         self._class_names_in_order = [classes[i] for i in sorted(classes)]
+
+        # Configure inference and tracking pipelines
         self._inference_pool.configure(config_id, epoch=self._epoch)
         self._tracker.configure(
             trackable_by_class_id=trackable,
             detection_class_name_to_id=name_to_id,
             epoch=self._epoch,
         )
+
+        # Start capturing frames from the video source
         self._consumer.set_source(video_source)
+
+        # Mark as streaming
         self._is_streaming = True
-        log.info(f"Streaming started for source={video_source} config_id={config_id}")
+
+        # Start the broadcaster thread if not already running
+        if self._broadcaster is None or not self._broadcaster.is_alive():
+            self._broadcaster = threading.Thread(
+                target=self._broadcast_loop,
+                name=f"broadcaster-epoch-{self._epoch}",
+                daemon=True,
+            )
+            self._broadcaster.start()
+            log.info(f"Broadcaster thread started for epoch={self._epoch}")
+
+        log.info(f"Streaming started: source={video_source} config_id={config_id}")
 
     def stop_streaming(self):
+        """Stop the current video stream and clean up resources.
+
+        This is called when:
+        - The last client disconnects
+        - Switching to a different video source
+        - Explicitly requested via API
+        """
+        log.info("Stopping stream...")
+
+        # Mark as not streaming (broadcaster thread will exit)
         self._is_streaming = False
+
+        # Increment epoch to invalidate any in-flight frames
         self._epoch += 1
+
+        # Stop capturing frames from video source
         if self._consumer is not None:
             self._consumer.make_idle()
 
+        # Clear processing queues to release memory
         for q in (self._frame_queue, self._inference_out_queue):
             while not q.empty():
                 try:
@@ -142,12 +251,32 @@ class VideoHandler:
                 except queue.Empty:
                     break
 
+        # Clear all client queues
+        with self._clients_lock:
+            for client_id, client_queue in self._clients.items():
+                while not client_queue.empty():
+                    try:
+                        client_queue.get_nowait()
+                    except queue.Empty:
+                        break
+
+        # Reset tracker state
         if self._tracker is not None:
             self._tracker.reset()
 
+        # Clear description buffers
         self._description_buffer.clear()
         self._description_vote_buffer.clear()
+
+        # Clear active config
         self._active_config_id = None
+
+        # Wait for broadcaster thread to finish (it checks _is_streaming)
+        if self._broadcaster is not None and self._broadcaster.is_alive():
+            self._broadcaster.join(timeout=2.0)
+            if self._broadcaster.is_alive():
+                log.warning("Broadcaster thread did not stop cleanly")
+
         log.info("Streaming stopped")
 
     def stop_streaming_if_active_config(self, config_id: int):
@@ -157,8 +286,21 @@ class VideoHandler:
         self.stop_streaming()
 
     def switch_video_source(self, new_video_source: str, new_config_id: int):
+        """Switch to a different video source.
+
+        All connected clients will seamlessly switch to the new video.
+        Client HTTP connections remain open - they just start receiving
+        frames from the new video source.
+
+        Args:
+            new_video_source: Path to new video file or RTSP URL
+            new_config_id: Database ID of the new configuration to use
+        """
+        # Stop the current stream (clears queues, increments epoch)
         self.stop_streaming()
 
+        # Start streaming the new source
+        # The broadcaster will start sending new frames to all clients
         self.start_streaming(new_video_source, new_config_id)
 
     def get_frame_and_detection_from_inference(self):
@@ -169,6 +311,76 @@ class VideoHandler:
             except queue.Empty:
                 continue
         return None
+
+    def _broadcast_loop(self) -> None:
+        """Broadcaster thread main loop.
+
+        Pulls inference results, draws bounding boxes once, encodes to JPEG once,
+        then broadcasts the same MJPEG chunk to all registered clients.
+
+        This runs in a dedicated thread while _is_streaming is True.
+        """
+        current_epoch = self._epoch
+        log.info(f"Broadcaster thread started (epoch={current_epoch})")
+
+        try:
+            while self._is_streaming:
+                # Pull next inference result (blocks until available)
+                result = self.get_frame_and_detection_from_inference()
+                if result is None:
+                    continue
+
+                # Skip stale frames from a previous video source
+                if result.epoch != current_epoch:
+                    log.debug(
+                        f"Broadcaster: dropping stale frame (epoch {result.epoch} != {current_epoch})"
+                    )
+                    continue
+
+                # Update description and summary (used by /latest_info endpoint)
+                self.latest_description = self._format_detection_description(
+                    result.counts, self._class_names_in_order
+                )
+                self._description_vote_buffer.append(self.latest_description)
+                self._description_buffer.append(self.latest_description)
+                self.latest_summary = self._generate_summary(self._description_buffer)
+
+                # Draw bounding boxes ONCE (not per client)
+                frame = self.draw_detections(result.frame, result.detections)
+
+                # Encode to JPEG ONCE (not per client)
+                chunk = self.encode_mjpeg_chunk(frame)
+                if chunk is None:
+                    continue
+
+                # Submit detections to tracker for database persistence
+                self._tracker.submit(result.detections, epoch=current_epoch)
+
+                # Broadcast the same chunk to all connected clients
+                with self._clients_lock:
+                    clients_snapshot = list(self._clients.items())
+
+                for client_id, client_queue in clients_snapshot:
+                    try:
+                        # Non-blocking put - if queue is full, drop oldest frame
+                        client_queue.put_nowait(chunk)
+                    except queue.Full:
+                        # Client is slow - drop their oldest frame and add the new one
+                        # This keeps them showing recent frames instead of lagging
+                        try:
+                            client_queue.get_nowait()  # Remove oldest
+                            client_queue.put_nowait(chunk)  # Add newest
+                            log.debug(
+                                f"Broadcaster: dropped frame for slow client {client_id}"
+                            )
+                        except queue.Empty:
+                            # Race condition - queue became empty, just skip
+                            pass
+
+        except Exception as e:
+            log.exception(f"Broadcaster thread error: {e}")
+        finally:
+            log.info(f"Broadcaster thread stopped (epoch={current_epoch})")
 
     def _format_detection_description(
         self,
@@ -336,38 +548,38 @@ class VideoHandler:
         return header + frame_bytes + b"\r\n"
 
     def frame_generator(self):
-        time.sleep(1)
-        current_epoch = self._epoch
+        """Generator that yields MJPEG chunks to a single HTTP client.
+
+        This is called once per /video_feed HTTP request. Each client gets
+        frames from the broadcaster via their own queue.
+
+        Yields:
+            bytes: MJPEG-formatted frame chunks
+        """
+        # If no video is active, return immediately
+        # Frontend will show "Select a source to start" placeholder
+        if not self._is_streaming:
+            log.info("frame_generator: No active video stream")
+            return
+
+        # Register this client to receive broadcasted frames
+        client_id, client_queue = self.register_client()
+
+        # Frame rate control - match the source video's frame interval
         frame_interval = self._consumer.frame_interval
         last_yield_time = time.perf_counter()
+
         try:
             while self._is_streaming:
-                result = self.get_frame_and_detection_from_inference()
-                if result is None:
+                try:
+                    # Pull next frame from this client's queue (with timeout)
+                    # The broadcaster thread is filling this queue
+                    chunk = client_queue.get(timeout=0.1)
+                except queue.Empty:
+                    # No frame available yet, check if still streaming and retry
                     continue
 
-                if result.epoch != current_epoch:
-                    log.debug(
-                        "Dropping stale inference result (epoch %d != %d)",
-                        result.epoch,
-                        current_epoch,
-                    )
-                    continue
-
-                self.latest_description = self._format_detection_description(
-                    result.counts, self._class_names_in_order
-                )
-                self._description_vote_buffer.append(self.latest_description)
-                self._description_buffer.append(self.latest_description)
-                self.latest_summary = self._generate_summary(self._description_buffer)
-
-                frame = self.draw_detections(result.frame, result.detections)
-                chunk = self.encode_mjpeg_chunk(frame)
-                if chunk is None:
-                    continue
-
-                self._tracker.submit(result.detections, epoch=current_epoch)
-
+                # Maintain frame rate timing
                 elapsed = time.perf_counter() - last_yield_time
                 sleep_time = frame_interval - elapsed
                 if sleep_time > 0:
@@ -375,24 +587,18 @@ class VideoHandler:
 
                 last_yield_time = time.perf_counter()
 
+                # Yield the MJPEG chunk to the HTTP response
                 try:
-                    yield_start = time.perf_counter()
                     yield chunk
-                    yield_end = time.perf_counter()
-                    log.debug(f"Yield took {(yield_end - yield_start) * 1000:.2f} ms")
                 except (BrokenPipeError, ConnectionResetError, OSError) as e:
-                    log.warning(f"Video feed: client disconnected during yield: {e}")
+                    log.warning(f"Client {client_id} disconnected during yield: {e}")
                     break
 
         except Exception as e:
-            log.exception(f"Video feed: exception in stream loop: {e}")
+            log.exception(f"frame_generator error for client {client_id}: {e}")
         finally:
-            if self._epoch == current_epoch and self._is_streaming:
-                log.info(
-                    "Video feed: generator closed, stopping stream (epoch=%d)",
-                    current_epoch,
-                )
-                self.stop_streaming()
+            # Always unregister the client on disconnect
+            self.unregister_client(client_id)
 
     def get_majority_description(self) -> str:
         """Return the most common description among the last K frames."""

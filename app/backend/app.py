@@ -3,10 +3,10 @@ from flask_cors import CORS
 import asyncio
 import json
 import os
+import queue as queue_module
 import uuid
 
 # import cv2
-# import time
 from datetime import datetime
 
 from tracing import init_tracing
@@ -17,6 +17,7 @@ from minio_client import (
     object_exists,
 )
 
+from active_config_manager import ActiveConfigManager
 from alert import LLMAlert
 from alert.state import AlertEntry, AlertsStore
 from chat import LLMChat
@@ -59,6 +60,10 @@ if count_app_configs() == 0:
     insert_demo_configs()
 log.info("VideoHandler initialized (video source selected from UI)")
 
+# Active config manager for SSE notifications
+# Notifies all connected clients when video source changes
+active_config_manager = ActiveConfigManager()
+
 alerts = AlertsStore()
 llm_alert = LLMAlert()
 llm_chat = LLMChat()
@@ -69,7 +74,11 @@ latest_summary = "Processing video..."
 
 @api.route("/video_feed")
 def video_feed():
-    """Video streaming route."""
+    """Video streaming route. Returns MJPEG stream for the active video.
+
+    Multiple clients can connect to this endpoint simultaneously.
+    All clients will see the same video frames in real-time.
+    """
     # feed_cfg = request.args.get("config")
     response = Response(
         video_handler.frame_generator(),
@@ -77,6 +86,62 @@ def video_feed():
     )
     # Disable proxy buffering to reduce periodic pauses (OpenShift/HAProxy)
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["X-Accel-Buffering"] = "no"
+    return response
+
+
+@api.route("/active_config/events")
+def active_config_events():
+    """Server-Sent Events endpoint for active configuration changes.
+
+    Clients subscribe to this endpoint to receive real-time notifications
+    when any user switches to a different video source. This allows all
+    browser tabs to update their UI to highlight the currently active video.
+
+    Returns:
+        Response: SSE stream with format:
+            data: {"active_config_id": 2, "video_source": "construction.mp4"}
+    """
+
+    def event_stream():
+        # Create a queue for this SSE client to receive notifications
+        client_queue = queue_module.Queue()
+
+        # Observer callback that puts notifications into this client's queue
+        def notify(config_id: int, video_source: str):
+            try:
+                client_queue.put_nowait(
+                    {"active_config_id": config_id, "video_source": video_source}
+                )
+            except queue_module.Full:
+                # Queue full - skip this update
+                pass
+
+        # Subscribe to active config changes
+        active_config_manager.subscribe(notify)
+        log.info("SSE client subscribed to active config events")
+
+        try:
+            # Keep connection alive with heartbeat and send updates
+            while True:
+                try:
+                    # Wait up to 30 seconds for a notification
+                    data = client_queue.get(timeout=30)
+                    # Send the active config update as SSE
+                    yield f"data: {json.dumps(data)}\n\n"
+                except queue_module.Empty:
+                    # No update in 30 seconds - send heartbeat comment to keep connection alive
+                    yield ": heartbeat\n\n"
+        except GeneratorExit:
+            # Client disconnected
+            log.info("SSE client disconnected from active config events")
+        finally:
+            # Unsubscribe when client disconnects
+            active_config_manager.unsubscribe(notify)
+
+    response = Response(event_stream(), mimetype="text/event-stream")
+    # Disable caching and buffering for SSE
+    response.headers["Cache-Control"] = "no-cache"
     response.headers["X-Accel-Buffering"] = "no"
     return response
 
@@ -440,7 +505,18 @@ def config_delete(config_id):
 
 @api.route("/active_config", methods=["POST"])
 def active_config_set():
-    """Set the active video source from a config. Switches to that config's video (MP4 path or RTSP URL)."""
+    """Set the active video source from a config.
+
+    Switches to the specified configuration's video (MP4 path or RTSP URL).
+    All connected video_feed clients will seamlessly switch to the new video.
+    All SSE clients will be notified to update their UI.
+
+    JSON body:
+        config_id (int): Database ID of the configuration to activate
+
+    Returns:
+        JSON with message, video_source, and active_config_id
+    """
     data = request.get_json(silent=True) or {}
     config_id = data.get("config_id")
     if config_id is None:
@@ -456,7 +532,13 @@ def active_config_set():
     if not video_source:
         return jsonify({"error": "Config has no video source"}), 400
     try:
+        # Switch the video source (all connected clients will see the new video)
         video_handler.switch_video_source(video_source, config_id)
+
+        # Notify all SSE clients about the active config change
+        # This updates the highlighted thumbnail in all browser tabs
+        active_config_manager.set_active_config(config_id, video_source)
+
         return jsonify(
             {
                 "message": "Active config set",

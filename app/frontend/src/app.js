@@ -50,6 +50,39 @@ function Dashboard() {
     fetchConfigs();
   }, [fetchConfigs]);
 
+  // Subscribe to active config changes via Server-Sent Events (SSE)
+  // This allows all browser tabs to update when any user switches videos
+  useEffect(() => {
+    const eventSource = new EventSource(`${API_URL}/active_config/events`);
+
+    eventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        const newActiveConfigId = data.active_config_id;
+
+        // Update both selected and active config to reflect the server state
+        // This ensures the UI highlights the correct thumbnail
+        setSelectedConfigId(newActiveConfigId);
+        setActiveConfigId(newActiveConfigId);
+
+        console.log('Active config updated via SSE:', newActiveConfigId, data.video_source);
+      } catch (err) {
+        console.error('Failed to parse SSE message:', err);
+      }
+    };
+
+    eventSource.onerror = (err) => {
+      console.error('SSE connection error:', err);
+      // EventSource automatically reconnects, no action needed
+    };
+
+    // Clean up: close SSE connection when component unmounts
+    return () => {
+      eventSource.close();
+      console.log('SSE connection closed');
+    };
+  }, []);
+
   return (
     <div className="App">
       <LogoBar />
